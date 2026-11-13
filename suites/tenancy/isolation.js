@@ -34,6 +34,16 @@ export function setup() {
   }
   const final = waitForTerminal(alice, workflowId, startedAt);
 
+  // Node outputs are stored under the Temporal RUN id, which differs from the workflow id: the workbench takes it
+  // from the first segment of the stored path ({remote}<runId>/<nodeId>/output.<port>.parquet). Read it the same way.
+  const run = safeJson(alice.get(cfg.apiServer, `/api/v1/workflow-runs/${workflowId}`).body) || {};
+  const outputMap = (run.data && run.data.nodeToOutputMap) || {};
+  const firstNode = Object.keys(outputMap)[0];
+  const firstPort = firstNode ? Object.keys(outputMap[firstNode])[0] : undefined;
+  const storedPath = firstNode && firstPort ? String((outputMap[firstNode][firstPort] || {}).data || '') : '';
+  const pathMatch = /^\{remote\}([^/]+)\/([^/]+)\/output\.([^.]+)\./.exec(storedPath);
+  const output = pathMatch ? { runId: pathMatch[1], nodeId: pathMatch[2], outputId: pathMatch[3] } : undefined;
+
   const typeName = `iso-type-${runId}`;
   alice.post(cfg.credentials, '/api/v1/credential-types', { type: typeName, version: '1.0.0', schema: {}, uiSchema: {} });
   const credName = `iso-cred-${runId}`;
@@ -53,7 +63,7 @@ export function setup() {
   });
   const scheduleId = (safeJson(sched.body) || {}).scheduleId;
 
-  return { runId, a, b, workflowId, final, credName, credStatus: cred.status, scheduleId };
+  return { runId, a, b, workflowId, final, credName, credStatus: cred.status, scheduleId, output };
 }
 
 export default function (d) {
@@ -65,22 +75,32 @@ export default function (d) {
     'setup: alice workflow completed': (x) => x.final === 'COMPLETED',
     'setup: alice credential created': (x) => x.credStatus === 201,
     'setup: alice schedule created': (x) => !!x.scheduleId,
+    'setup: found alice\'s stored output path (run id, node, port)': (x) => !!x.output,
   });
 
   // Sanity: alice can see her own things, so a 404 for bob means "not yours", not "broken".
   check(alice.get(cfg.apiServer, `/api/v1/workflow/${wf}/status`), { 'alice sees her workflow status': (r) => r.status === 200 });
   check(alice.get(cfg.credentials, `/api/v1/credentials/${d.credName}`), { 'alice reads her credential': (r) => r.status === 200 });
 
+  // The owner CAN read their own node output. This is the check that was missing when ownership scoping broke it:
+  // a suite that only proves "bob is denied" also passes when nobody can read anything.
+  if (d.output) {
+    const out = `/api/v1/data/${encodeURIComponent(d.output.runId)}/nodes/${encodeURIComponent(d.output.nodeId)}` +
+      `/outputs/${encodeURIComponent(d.output.outputId)}?page=0&pageSize=10`;
+    const mine = alice.get(cfg.apiServer, out, { endpoint: 'node_output' });
+    check(mine, {
+      'alice reads her own node output (200)': (r) => r.status === 200,
+      'alice\'s node output has rows': (r) => ((safeJson(r.body) || {}).totalElements || 0) > 0,
+    });
+    // ...and bob, asking for exactly the same address, does not.
+    expectHidden(bob.get(cfg.apiServer, out, { endpoint: 'node_output' }), 'node output', d.b);
+  }
+
   // --- Workflow API: by id -> 404 for bob.
   expectHidden(bob.get(cfg.apiServer, `/api/v1/workflow/${wf}/status`), 'workflow status', d.b);
   expectHidden(bob.post(cfg.apiServer, `/api/v1/workflow/${wf}/cancel`, null), 'workflow cancel', d.b);
   expectHidden(bob.post(cfg.apiServer, `/api/v1/workflow/${wf}/terminate`, null), 'workflow terminate', d.b);
   expectHidden(bob.get(cfg.apiServer, `/api/v1/workflow-runs/${wf}`), 'run record', d.b);
-  expectHidden(
-    bob.get(cfg.apiServer, `/api/v1/data/${wf}/nodes/2/outputs/data?page=0&pageSize=10`),
-    'node output',
-    d.b,
-  );
 
   // --- Workflow API: collections must not contain alice's workflow id.
   const noLeak = (name, res) => {

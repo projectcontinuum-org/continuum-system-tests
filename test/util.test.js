@@ -1,10 +1,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
+  flattenTree,
+  isProblemJson,
   isTerminal,
   newRunId,
   normalizeStatus,
+  outputsOf,
   pageContent,
+  parseStoredPath,
   randomHex,
   renameWorkflow,
   safeJson,
@@ -69,4 +73,51 @@ test('safeJson returns undefined instead of throwing on a non-JSON body', () => 
   assert.deepEqual(safeJson('{"a":1}'), { a: 1 });
   assert.equal(safeJson('<html>'), undefined);
   assert.equal(safeJson(''), undefined);
+});
+
+test('parseStoredPath reads run id, node and port from a stored output reference', () => {
+  assert.deepEqual(parseStoredPath('{remote}05063841-8adc/2/output.data.parquet'), {
+    runId: '05063841-8adc',
+    nodeId: '2',
+    outputId: 'data',
+  });
+  assert.deepEqual(parseStoredPath('{remote}r/6/output.high.parquet').outputId, 'high');
+});
+
+test('parseStoredPath rejects anything that is not a stored output reference', () => {
+  for (const v of [undefined, null, '', 'r/2/output.data.parquet', '{remote}r/2/input.data.parquet', '{remote}r/output.data.parquet', {}]) {
+    assert.equal(parseStoredPath(v), undefined, String(v));
+  }
+});
+
+test('outputsOf lists every parsed output of a run record and skips junk', () => {
+  const record = {
+    data: {
+      nodeToOutputMap: {
+        2: { data: { data: '{remote}r1/2/output.data.parquet' } },
+        6: { high: { data: '{remote}r1/6/output.high.parquet' }, low: { data: '{remote}r1/6/output.low.parquet' } },
+        7: { data: { data: 'not-a-path' } },
+      },
+    },
+  };
+  assert.deepEqual(
+    outputsOf(record).map((o) => `${o.nodeId}/${o.outputId}`).sort(),
+    ['2/data', '6/high', '6/low'],
+  );
+  for (const v of [undefined, {}, { data: {} }, { data: { nodeToOutputMap: null } }]) {
+    assert.deepEqual(outputsOf(v), []);
+  }
+});
+
+test('flattenTree walks nested children', () => {
+  const tree = [{ id: 'a', children: [{ id: 'b' }, { id: 'c', children: [{ id: 'd' }] }] }, { id: 'e', children: null }];
+  assert.deepEqual(flattenTree(tree).map((i) => i.id), ['a', 'b', 'c', 'd', 'e']);
+  assert.deepEqual(flattenTree(undefined), []);
+});
+
+test('isProblemJson recognises the api-server error content type', () => {
+  assert.equal(isProblemJson('application/problem+json'), true);
+  assert.equal(isProblemJson('application/problem+json;charset=UTF-8'), true);
+  assert.equal(isProblemJson('application/json'), false);
+  assert.equal(isProblemJson(undefined), false);
 });

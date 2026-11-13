@@ -2,16 +2,58 @@
 
 System, multi-tenant and load tests for [Project Continuum](https://github.com/projectcontinuum-org), written for [Grafana k6](https://k6.io). The tests are black-box: they call the platform's REST APIs on a running stack and never import platform code.
 
-> **Status:** early. Only `smoke` and `tenancy/isolation` exist so far, and both pass against the docker-compose stack. The API suites, load profiles and per-feature tests are planned (see [Roadmap](#roadmap)).
+> **Status:** early. `smoke`, `tenancy/isolation` and six API suites exist, and all pass against the docker-compose stack. The workbench, gateway and knime-scheduler suites, the load profiles and the per-feature tests are planned (see [Roadmap](#roadmap)).
 
 ## What is tested
 
 | Suite | What it checks | Fails the run when |
 |---|---|---|
 | `suites/smoke.js` | api-server and credentials-server health, the feature-base nodes are registered, one workflow runs to `COMPLETED`, a credential create/read/delete round trip | any check fails |
-| `suites/tenancy/isolation.js` | tenant B cannot read or act on tenant A's workflow runs, node output, credentials or schedules | any isolation check fails (`isolation_violations` must be 0) |
+| `suites/tenancy/isolation.js` | tenant B cannot read or act on tenant A's workflow runs, node output, credentials or schedules, and A can still read their own output | any isolation check fails (`isolation_violations` must be 0) |
+| `suites/api/workflow.js` | start, status, list, count (with `GROUP BY`), tree, active, cancel and terminate (running, finished and unknown ids), query-injection rejection | any check fails |
+| `suites/api/runs.js` | run list and paging, RSQL filter, get by id, count, distinct workflows | any check fails |
+| `suites/api/schedules.js` | create, get, list, filter, pause, unpause, trigger, delete, validation, ownership | any check fails |
+| `suites/api/node-explorer.js` | palette tree, search, documentation, task-queue lookup | any check fails |
+| `suites/api/data.js` | node output paging, the CONTNM-161 paging and id validation, ownership | any check fails |
+| `suites/api/credentials.js` | credential types and credentials CRUD, validation, per-tenant namespaces | any check fails |
+| `suites/api/cluster-manager.js` | workbench API: input validation (CONTNM-161), 404s, authorize, tenant scoping; with a cluster, the full create / suspend / resume / update / delete lifecycle | any check fails. Skips when the service is not reachable. |
 
 The isolation suite covers `/status`, `/cancel`, `/terminate`, `/active`, `/list`, `/count`, `/tree`, `/workflow-runs`, `/api/v1/data/...`, credentials and schedules.
+
+### Cluster-manager suite (optional)
+
+The cluster-manager (per-user workbench pods) is not part of `make up`. It has two tiers:
+
+```bash
+make up-cluster-manager      # starts it next to the running stack, on :8082
+make cluster-manager         # tier 1
+CLUSTER_MANAGER_K8S=true make cluster-manager   # tier 1 + tier 2
+```
+
+- **Tier 1 (default).** Needs only the cluster-manager and Postgres. It checks input validation, 404s, `authorize`, `variants`, `tags` and tenant scoping. Every request is one the service rejects *before* it touches Kubernetes, so nothing is ever created. Without a cluster, anything that does reach Kubernetes answers 500, so tier 1 sends none of those.
+- **Tier 2 (`CLUSTER_MANAGER_K8S=true`).** Creates, waits for, updates, suspends, resumes and deletes **real workbench pods**, so the cluster-manager must be able to reach a cluster (set `KUBERNETES_MASTER_URL` for the container, with the credentials your cluster needs). It creates at most one workbench per run, with small resource requests, and always deletes it, even if a check fails. A cold node pulls a multi-GB image, so the ready timeout defaults to 300 s (`CLUSTER_READY_TIMEOUT_SEC`).
+- If the service is not reachable the suite prints `SKIPPED` and exits 0.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `CLUSTER_MANAGER_URL` | `http://localhost:8082` | cluster-manager base URL |
+| `CLUSTER_MANAGER_K8S` | `false` | run tier 2 |
+| `CLUSTER_MANAGER_IMAGE_ALLOWLIST` | `true` | the cluster-manager only accepts images from its own repository (its default). Set `false` if it runs with `WORKBENCH_ALLOWED_IMAGE_PREFIXES` empty. |
+| `CLUSTER_MANAGER_OVERLAYS` | `false` | the cluster-manager runs with `OVERLAY_ENABLED=true`, so an unknown variant name is rejected |
+| `CLUSTER_READY_TIMEOUT_SEC` | `300` | how long to wait for a pod to become ready |
+
+### Known gaps
+
+Behaviour that is wrong today is reported, not failed. The suite asserts the status code it *should* return; while the platform still answers something else, it logs a `KNOWN GAP` warning and counts it in the `known_gaps` metric (tagged `gap:<name>`). When the platform is fixed the warning disappears, and the call can become a normal check. Current gaps:
+
+| Where | Today | Want |
+|---|---|---|
+| a malformed RSQL `filter` on `/workflow-runs` and `/workflow/schedule/filter` | 500 | 400 |
+| `/api/v1/data` for a port or node with no stored file | 500 | 404 |
+| credential create with a missing field or a non-JSON body | 500 | 400 |
+| workbench create with a non-JSON body or no `instanceName` | 500 | 400 |
+| workbench create or update with a `resources` object that omits a field (every `ResourceSpec` field is required, although the update code merges field by field and so looks designed for partial updates) | 500 | 400, or accepted and merged with the current values |
+| reading a suspended workbench (tier 2) | status becomes `UNKNOWN`, so it can no longer be resumed | stays `SUSPENDED` |
 
 ## Requirements
 
@@ -26,6 +68,7 @@ make pull       # optional: download the images first, or re-download after a fa
 make up         # start the stack (infra, platform services, the feature-base worker)
 make smoke      # about a minute
 make tenancy    # tenant isolation
+make api        # all six API suites
 make down       # stop the stack and delete its volumes
 ```
 
@@ -119,15 +162,16 @@ See [AGENTS.md](AGENTS.md) for the full contracts.
 
 ## Known limitations
 
-Both suites have been run successfully against the compose stack. What they do not cover yet:
+All suites have been run successfully against the compose stack. What they do not cover yet:
 
 - The branch for a node that is **not** registered (the "feature-base is not serving" failure) has not been exercised, only the case where the nodes are present.
-- Credential responses are asserted by status code and `name` only.
 - The isolation suite has been seen to pass, but not to fail. Before relying on it, break an ownership check on purpose (for example remove the owner check in the api-server's `cancelWorkflow`) and confirm the run goes red.
+- Cancel and terminate are exercised on a workflow that is cancelled right after it starts. That race is intermittent, so run `suites/api/workflow.js` several times after any change to the orchestration service.
+- The suites need a platform with the `run_id` column (0.0.23 built from this branch). Against an older api-server, node output is addressed by a different id and `data.js` and `isolation.js` fail.
 
 ## Roadmap
 
-1. **Per-service API suites** (`suites/api/`): api-server and credentials-server first, then the workbench, gateway and knime-scheduler, which need extra services. Includes regression checks for the CONTNM-161 security fixes.
+1. **Workbench suite** (the Theia UI itself; planned for later). The cluster-manager API suite is done. The gateway and knime-scheduler are not part of the core platform and have no suites.
 2. **Load profiles**: throughput, stress, spike, soak, read-heavy and a noisy-neighbour test, with per-tenant thresholds. These will be opt-in and refuse to run against an environment that is not on an allow-list.
 3. **Optional per-feature tests**: each feature declares the node classes it needs and is skipped when its worker is not deployed.
 4. **CI**: smoke, API and tenancy on every pull request; a nightly load run.

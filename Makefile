@@ -1,4 +1,4 @@
-.PHONY: up pull down logs ps smoke tenancy test check
+.PHONY: up pull down logs ps smoke tenancy api cluster-manager up-cluster-manager test check
 
 # Use the `docker compose` plugin when present, otherwise the standalone `docker-compose` binary (for example a
 # Homebrew install where the plugin directory is not registered in ~/.docker/config.json).
@@ -32,6 +32,22 @@ smoke:
 
 tenancy:
 	./run.sh tenancy
+
+# Every suite under suites/api/, one after another. Stops at the first failing suite.
+API_SUITES = workflow runs schedules node-explorer data credentials
+api:
+	@set -e; for s in $(API_SUITES); do echo "=== api/$$s"; ./run.sh suites/api/$$s.js --quiet; done
+
+# The cluster-manager is optional and not part of `make up`. This starts it next to the running stack. Without a
+# Kubernetes cluster it still answers validation, 404 and authorize requests (the suite's first tier).
+up-cluster-manager:
+	$(COMPOSE_BIN) -f docker/docker-compose.yml -f docker/docker-compose.cluster-manager.yml --env-file docker/.env \
+		up -d --no-deps --wait continuum-cluster-manager
+
+# Skips itself (and says so) when the cluster-manager is not reachable. Add CLUSTER_MANAGER_K8S=true to also run the
+# lifecycle tier, which creates real pods and needs the cluster-manager to reach a cluster.
+cluster-manager:
+	./run.sh suites/api/cluster-manager.js
 
 # Pure-JS unit tests for lib/util.js and a syntax check of every k6 script. Needs only node, not k6 or Docker.
 test:

@@ -1,0 +1,39 @@
+# Adds the cluster-manager to the stack. Use together with the main file (the Makefile target does this):
+#   docker compose -f docker-compose.yml -f docker-compose.cluster-manager.yml up -d continuum-cluster-manager
+#
+# It is a separate file so docker-compose.yml stays a copy of the template repo's compose file.
+#
+# The cluster-manager creates one Deployment, PVC and Service per workbench through the Kubernetes API.
+#   - With no cluster configured it still starts: input validation, 404s, authorize and list all work, and
+#     anything that has to touch Kubernetes answers 500. That is enough for the "no cluster" tier of the suite.
+#   - For the lifecycle tier, point it at a cluster: set KUBERNETES_MASTER_URL (and a token / client certificate
+#     as your cluster requires), or mount a kubeconfig and set KUBECONFIG, for example in docker/.env:
+#       KUBERNETES_MASTER_URL=https://host.docker.internal:6443
+services:
+  continuum-cluster-manager:
+    image: projectcontinuum/continuum-cluster-manager:${CONTINUUM_PLATFORM_VERSION:-0.0.21}
+    container_name: continuum-cluster-manager
+    ports:
+      # 8082 is the port the cloud-gateway expects the cluster-manager on
+      - "8082:8080"
+    environment:
+      CONTINUUM_DB_URL: jdbc:postgresql://postgresql:5432/continuum
+      CONTINUUM_DB_USERNAME: continuum_owner
+      CONTINUUM_DB_PASSWORD: continuum-test-password
+      KUBERNETES_MASTER_URL: ${KUBERNETES_MASTER_URL:-}
+      WORKBENCH_NAMESPACE: ${WORKBENCH_NAMESPACE:-default}
+      WORKBENCH_DEFAULT_IMAGE: ${WORKBENCH_DEFAULT_IMAGE:-projectcontinuum/continuum-workbench:0.0.14}
+    depends_on:
+      postgresql:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - temporal-network
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:8080/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 15
+      start_period: 30s
+    restart: unless-stopped
