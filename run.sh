@@ -19,11 +19,17 @@ esac
 # One id per invocation so the tenants and workflow names of different runs never collide.
 export RUN_ID="${RUN_ID:-$(date +%s | xargs printf '%x')$(LC_ALL=C tr -dc 'a-f0-9' </dev/urandom | head -c 4)}"
 
+# Set the JSON default on its own line: an inline ${VAR:-{}} default is mangled by bash's brace handling.
+TENANT_TOKENS="${TENANT_TOKENS:-}"
+if [ -z "$TENANT_TOKENS" ]; then
+  TENANT_TOKENS='{}'
+fi
+
 exec k6 run \
   -e RUN_ID="$RUN_ID" \
   -e API_SERVER_URL="${API_SERVER_URL:-http://localhost:8080}" \
   -e CREDENTIALS_URL="${CREDENTIALS_URL:-http://localhost:8083}" \
   -e AUTH_MODE="${AUTH_MODE:-header}" \
-  -e TENANT_TOKENS="${TENANT_TOKENS:-{\}}" \
+  -e TENANT_TOKENS="$TENANT_TOKENS" \
   -e WORKFLOW_TIMEOUT_SEC="${WORKFLOW_TIMEOUT_SEC:-120}" \
   "${@:2}" "$suite"

@@ -1,6 +1,9 @@
 .PHONY: up down logs ps smoke tenancy test check
 
-COMPOSE = docker compose -f docker/docker-compose.yml --env-file docker/.env
+# Use the `docker compose` plugin when present, otherwise the standalone `docker-compose` binary (for example a
+# Homebrew install where the plugin directory is not registered in ~/.docker/config.json).
+COMPOSE_BIN := $(shell docker compose version >/dev/null 2>&1 && echo "docker compose" || echo "docker-compose")
+COMPOSE = $(COMPOSE_BIN) -f docker/docker-compose.yml --env-file docker/.env
 
 # Infra + platform services + feature-base worker. Workbench, nginx and cheminformatics are not needed for the tests.
 SERVICES = postgresql temporal temporal-search-attributes-init mosquitto kafka1 kafka2 kafka3 schema-registry minio \

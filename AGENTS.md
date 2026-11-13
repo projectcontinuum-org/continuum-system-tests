@@ -11,6 +11,7 @@
 - `suites/`: k6 scripts. `smoke.js` and `tenancy/isolation.js` exist today.
 - `fixtures/workflows/`: workflow models posted to the api-server.
 - `test/`: `node --test` unit tests for `lib/util.js`.
+- `README.md`: user-facing setup and usage. Keep it in sync with the suites, env vars and Make targets listed here.
 
 ## Local Contracts
 
