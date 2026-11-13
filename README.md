@@ -22,6 +22,7 @@ The isolation suite covers `/status`, `/cancel`, `/terminate`, `/active`, `/list
 ## Quick start
 
 ```bash
+make pull       # optional: download the images first, or re-download after a failed pull
 make up         # start the stack (infra, platform services, the feature-base worker)
 make smoke      # about a minute
 make tenancy    # tenant isolation

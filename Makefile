@@ -1,4 +1,4 @@
-.PHONY: up down logs ps smoke tenancy test check
+.PHONY: up pull down logs ps smoke tenancy test check
 
 # Use the `docker compose` plugin when present, otherwise the standalone `docker-compose` binary (for example a
 # Homebrew install where the plugin directory is not registered in ~/.docker/config.json).
@@ -12,6 +12,11 @@ SERVICES = postgresql temporal temporal-search-attributes-init mosquitto kafka1 
 
 up:
 	$(COMPOSE) up -d --wait $(SERVICES)
+
+# Pull (or re-pull) the images for the services above without starting anything. Layers that were already
+# downloaded are reused, so this resumes after a failed pull (for example a full disk).
+pull:
+	$(COMPOSE) pull $(SERVICES)
 
 down:
 	$(COMPOSE) down -v
