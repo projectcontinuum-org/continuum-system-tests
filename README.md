@@ -28,7 +28,12 @@ The cluster-manager (per-user workbench pods) is not part of `make up`. It has t
 make up-cluster-manager      # starts it next to the running stack, on :8082
 make cluster-manager         # tier 1
 CLUSTER_MANAGER_K8S=true make cluster-manager   # tier 1 + tier 2
+make down-cluster-manager    # stops and removes only the cluster-manager container
 ```
+
+`make down` does not touch the cluster-manager (it only knows the main compose file), so use `make down-cluster-manager`
+for it. It leaves the rest of the stack and the database alone; workbench records stay in Postgres until `make down`
+removes the volumes. If it was run with `CLUSTER_MANAGER_K8S=true`, the suite already deleted its own workbench.
 
 - **Tier 1 (default).** Needs only the cluster-manager and Postgres. It checks input validation, 404s, `authorize`, `variants`, `tags` and tenant scoping. Every request is one the service rejects *before* it touches Kubernetes, so nothing is ever created. Without a cluster, anything that does reach Kubernetes answers 500, so tier 1 sends none of those.
 - **Tier 2 (`CLUSTER_MANAGER_K8S=true`).** Creates, waits for, updates, suspends, resumes and deletes **real workbench pods**, so the cluster-manager must be able to reach a cluster (set `KUBERNETES_MASTER_URL` for the container, with the credentials your cluster needs). It creates at most one workbench per run, with small resource requests, and always deletes it, even if a check fails. A cold node pulls a multi-GB image, so the ready timeout defaults to 300 s (`CLUSTER_READY_TIMEOUT_SEC`).
@@ -160,6 +165,287 @@ These do not need k6 or Docker. They do not run the suites.
 
 See [AGENTS.md](AGENTS.md) for the full contracts.
 
+## Load tests
+
+Load tests answer different questions from the functional suites: where does latency start to climb, what breaks
+first, does one tenant slow another, does the system recover, does it drift over time. They are **opt-in and guarded**.
+
+> **Safety.** A run creates workflows, object-store files and database rows that **cannot be deleted through the API**.
+> Every load suite refuses to send a single request unless **`ALLOW_LOAD=true`** is set **and** every target host
+> (api-server, credentials-server, cluster-manager) is on **`LOAD_ALLOWED_HOSTS`** (default: `localhost,127.0.0.1`).
+> The host match is exact, so `localhost.evil.com` does not match `localhost`. Do not add a shared or production host
+> to that list. `make down` removes everything a run created on a local stack.
+
+### Before you start
+
+1. **Check the stack is healthy and idle.** `make smoke` should pass. Load numbers are only comparable when the machine
+   is otherwise quiet: close other heavy apps, and do not run two load tests at once.
+2. **Know your machine.** The default rates assume a small Docker VM (2 CPUs, 8 GB) that also runs Kafka, Temporal,
+   Postgres and MinIO. If the feature worker image is `amd64` on Apple silicon it runs under emulation, which is
+   slower. Look at `docker info --format 'CPUs={{.NCPU}} Mem={{.MemTotal}}'` and `docker stats --no-stream`.
+3. **Start with a short run.** `LOAD_SCALE=0.25` shortens every phase to a quarter. It tells you whether the harness
+   works and roughly where you are, but a shortened run measures little (see [Reading the result](#reading-the-result)).
+4. **Keep a baseline.** Run the same profile once on a quiet stack and save its `summary-load-*.json` (see
+   [Comparing two runs](#comparing-two-runs)). A number without a baseline from the same machine says very little.
+
+### How to run
+
+Settings are environment variables. `make` passes any variable you put on its command line through to the run, so
+these are equivalent:
+
+```bash
+ALLOW_LOAD=true PROFILE=throughput make load
+ALLOW_LOAD=true make load PROFILE=throughput
+ALLOW_LOAD=true PROFILE=throughput ./run.sh load       # without make
+ALLOW_LOAD=true ./run.sh suites/load/profile.js --out json=run.json   # extra arguments go to k6
+```
+
+Each run prints a table with one row per phase and a plain-language summary, and writes the same numbers to
+`summary-load-<profile>.json` (git-ignored) so two runs can be compared.
+
+```
+phase   offered  for  workflows  success  e2e p50  e2e p95  e2e max  start p95  dropped
+step1x    6/min  15s          2   100.0%     2.1s     3.0s     3.1s       48ms        0
+step2x   12/min  15s          3   100.0%     1.0s     1.0s     1.0s       24ms        0
+step4x   24/min  15s          6   100.0%     1.0s     2.8s     3.1s       27ms        0
+step8x   48/min  15s         12   100.0%     2.6s     4.5s     5.1s       60ms        0
+
+- Latency stayed within 2x of the first phase (p95 3.0s) across every phase.
+- Every workflow in every phase succeeded.
+```
+
+That is a real run (`LOAD_SCALE=0.25`, so each phase is 15 seconds) on a 2-CPU Docker VM. It shows the output format;
+the numbers are too few to conclude anything from (2 workflows in the first phase). The columns: **offered** is the
+rate k6 tried to apply; **workflows** is how many it started and followed to the end; **e2e** is from the start request
+to a final status; **start p95** is the latency of the start request alone; **dropped** is iterations k6 could not
+start at all.
+
+### Profiles
+
+Load is applied with k6 **arrival-rate** executors: the offered rate stays constant when the system slows down, which
+is what makes saturation visible. (With a fixed number of users, a slow system would simply receive less load and
+look fine.) Every phase is its own k6 scenario, so each gets its own numbers. The base rate is `BASE_RATE_PER_MIN`.
+
+| Profile | Shape (base rate B) | Takes | What it finds | Can fail the run |
+|---|---|---|---|---|
+| `throughput` | B, 2B, 4B, 8B, a minute each | 4 min | the rate where latency starts to climb | every step: success > 99%, e2e and start p95 under the limits, no dropped iterations |
+| `stress` | B up to 64B, doubling each minute | 7 min | what breaks first, and at which rate | **aborts** the test when more than 5% of requests or workflows fail |
+| `spike` | B for 1 min, **10B for 2 min**, B for 2 min | 5 min | does it recover after a burst? | `before` and `after`; the spike itself may degrade |
+| `soak` | B for `SOAK_SEC`, in four equal quarters | `SOAK_SEC` | drift and leaks over time | every quarter |
+| `noisy` | a quiet tenant alone, then beside a tenant at `NOISY_FACTOR` x its rate | 5 min | does one tenant slow another? | the quiet tenant (see below) |
+
+All times are at `LOAD_SCALE=1`. `stress` is meant to break the system, so it has no latency gate: it stops itself.
+
+### Realistic examples
+
+Rates are workflows per minute. The fixture workflow (`CreateTable` of 1000 rows, an anomaly detector and a splitter)
+takes about 1 to 3 seconds when the stack is idle. Pick the example nearest to your machine and adjust.
+
+**1. Quick check that everything works (about 1 minute)**
+
+```bash
+ALLOW_LOAD=true LOAD_SCALE=0.25 make load PROFILE=throughput
+```
+
+**2. Capacity of a laptop-sized stack (4 minutes)** The default: starts at one workflow every 10 seconds and doubles
+each minute up to 48 per minute. Look for the first row where e2e p95 more than doubles.
+
+```bash
+ALLOW_LOAD=true make load PROFILE=throughput
+```
+
+**3. Capacity of a larger machine or a cluster (4 minutes)** Start at 30 per minute (0.5 per second), reaching 240.
+Raise `MAX_VUS` so k6 is not the limit: at 240 per minute and a 10-second workflow you need about 40 users in flight,
+and more as latency grows.
+
+```bash
+ALLOW_LOAD=true BASE_RATE_PER_MIN=30 MAX_VUS=300 make load PROFILE=throughput
+```
+
+**4. Find the breaking point (7 minutes)** Doubles every minute from 6 to 384 per minute and aborts when more than 5%
+of workflows fail. Warning: this pushes the machine to its limit and may make a small Docker VM unresponsive. Do
+not run it on a machine you are working on.
+
+```bash
+ALLOW_LOAD=true BASE_RATE_PER_MIN=6 MAX_VUS=300 make load PROFILE=stress
+```
+
+**5. A traffic burst, then recovery (5 minutes)** A steady 12 per minute, a 2-minute burst of 120, then 12 again. The
+question is whether the `after` phase returns to the `before` latency; if it does not, work is queueing and not
+draining.
+
+```bash
+ALLOW_LOAD=true BASE_RATE_PER_MIN=12 MAX_VUS=200 make load PROFILE=spike
+```
+
+**6. Overnight soak (1 hour; run it at night)** A modest constant rate for a long time, to find leaks and drift. Compare
+`q1` with `q4`: p95 that creeps up, or success that falls, points to a leak (the worker cache directory and the
+api-server's DuckDB connection are known suspects, and nothing deletes object-store files).
+
+```bash
+ALLOW_LOAD=true BASE_RATE_PER_MIN=12 SOAK_SEC=3600 make load PROFILE=soak
+```
+
+**7. Many tenants, few tenants** Load is spread round-robin over `LOAD_TENANTS` tenants (default 10). Use one tenant to
+see the single-tenant ceiling, and 100 to look for per-tenant cost (each tenant has its own rows and filters).
+
+```bash
+ALLOW_LOAD=true LOAD_TENANTS=1   make load PROFILE=throughput
+ALLOW_LOAD=true LOAD_TENANTS=100 make load PROFILE=throughput
+```
+
+**8. Is one tenant slowing another? (5 minutes)** See [Noisy neighbour](#noisy-neighbour).
+
+```bash
+ALLOW_LOAD=true NOISY_FACTOR=12 make noisy          # 12x: a moderate neighbour
+ALLOW_LOAD=true NOISY_FACTOR=20 MAX_VUS=200 make noisy   # 20x: heavy
+```
+
+**9. A stricter gate for CI** Fail the run when a step is slower than you will accept.
+
+```bash
+ALLOW_LOAD=true E2E_P95_MAX_MS=8000 START_P95_MAX_MS=300 make load PROFILE=throughput
+```
+
+**10. A slower platform behind a network** Longer waits before a workflow counts as timed out, and less polling.
+
+```bash
+ALLOW_LOAD=true WORKFLOW_TIMEOUT_SEC=300 POLL_INTERVAL_SEC=2 API_SERVER_URL=http://localhost:8081 make load
+```
+
+### Noisy neighbour
+
+This is the multi-tenant load test: does one tenant flooding the system slow down another?
+
+1. **Baseline.** In `setup()` the quiet tenant runs `CALIBRATION_RUNS` (6) workflows alone on the idle stack. The
+   baseline is their **p90**, not the median: one workflow's time varies from run to run (about 1 s to 3 s on a small
+   stack), and against a median that ordinary idle variation would be reported as a slowdown caused by the neighbour.
+2. **Limit.** `max(FAIRNESS_MAX_RATIO x baseline, baseline + FAIRNESS_SLACK_MS)`. The slack stops a very fast stack
+   from turning ordinary jitter into a failure.
+3. **Test.** The quiet tenant keeps a steady rate (`QUIET_RATE_PER_MIN`, default the base rate); after `ALONE_SEC` a
+   second tenant floods the system at `NOISY_FACTOR` x that rate. Every quiet workflow is checked against the limit, in
+   both phases (the idle phase proves the limit is not set too tight).
+4. **Verdict.** More than 95% of the quiet tenant's workflows must finish OK within the limit. The report ends with
+   a `Fairness PASS` or `Fairness FAIL` line with the counts. That line, not the latency table, decides the exit code.
+   The table is a comparison of p95s; a single workflow over the limit fails the run even when the p95 ratio is fine.
+   With fewer than 20 quiet workflows (a shortened `LOAD_SCALE`) one slow workflow is enough to fail the 95% rule, and
+   the report says so. Run it at `LOAD_SCALE=1` before trusting a verdict.
+
+The platform has no per-tenant isolation of compute today: all tenants share the Temporal task queues and the workers.
+So when the neighbour is heavy enough to saturate the workers, the quiet tenant waits in the same queue and the test
+fails. That is a finding about the platform, not a flaw in the test. On a small stack, a 20x neighbour is expected to
+fail it, while a neighbour that does not saturate the stack (about 8x on a 2-CPU VM) should pass. A deployment with
+more workers, or per-tenant task queues, would behave differently and this test measures it.
+
+### Load settings
+
+All variables, with their defaults. Anything not listed here is not read by the load suites.
+
+**Safety**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `ALLOW_LOAD` | `false` | must be `true`, or the run refuses to start |
+| `LOAD_ALLOWED_HOSTS` | `localhost,127.0.0.1` | comma-separated hosts that may be loaded; matched exactly |
+
+**Shape of the load**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `PROFILE` | `throughput` | `throughput`, `stress`, `spike` or `soak` (`make noisy` is its own target) |
+| `BASE_RATE_PER_MIN` | `6` | workflows per minute at the first step. One every 10 s is gentle for a 2-CPU Docker VM |
+| `LOAD_SCALE` | `1` | multiplies every phase length (`0.25` is a quarter of the time, `2` is double) |
+| `SOAK_SEC` | `600` | total length of the `soak` profile, split into four quarters |
+| `LOAD_TENANTS` | `10` | tenants the load is spread over, round-robin |
+| `MAX_VUS` | `100` | cap on k6 virtual users per phase. Hitting it shows up as `dropped` iterations |
+
+**What counts as a pass** (gated phases only)
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `E2E_P95_MAX_MS` | `30000` | highest end-to-end p95 a gated phase may show |
+| `START_P95_MAX_MS` | `1000` | highest p95 of the start request alone |
+
+**Waiting for workflows**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WORKFLOW_TIMEOUT_SEC` | `120` | how long to wait for one workflow to reach a final status before counting it failed |
+| `POLL_INTERVAL_SEC` | `1` | how often to ask for its status. More polling adds load of its own |
+
+**Noisy neighbour**
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QUIET_RATE_PER_MIN` | `BASE_RATE_PER_MIN` | the quiet tenant's steady rate |
+| `NOISY_FACTOR` | `8` | the neighbour's rate as a multiple of the quiet tenant's |
+| `FAIRNESS_MAX_RATIO` | `2` | how many times its idle baseline the quiet tenant may take |
+| `FAIRNESS_SLACK_MS` | `2000` | never tighter than the baseline plus this |
+| `CALIBRATION_RUNS` | `6` | idle workflows run first to measure the baseline |
+| `ALONE_SEC` / `NOISE_SEC` | `120` / `180` | length of the quiet-alone phase and of the loud phase (both scaled by `LOAD_SCALE`) |
+
+**Targets** (shared with the other suites): `API_SERVER_URL`, `CREDENTIALS_URL`, `CLUSTER_MANAGER_URL`, `AUTH_MODE`.
+
+### Reading the result
+
+- **Look at the first row where latency doubles.** The findings line says it: "Latency doubles at step4x (24/min)".
+  Below that rate the platform keeps up; above it, work queues.
+- **Success below 100% means workflows failed or timed out**, not just that they were slow. A workflow that cannot
+  even be started counts as failed. Check `WORKFLOW_TIMEOUT_SEC` before blaming the platform: a workflow still queued
+  at the timeout is a failure.
+- **`dropped` > 0** means k6 could not start the planned number of iterations. The report works out which of two things
+  it is, using the rate and the measured latency (a phase needs about *rate x latency* virtual users):
+  - the phase needed **more** users than `MAX_VUS`: raise `MAX_VUS`. The numbers for that phase describe k6.
+  - the phase needed **far fewer** than `MAX_VUS`: the cap is not the cause. Workflows took so long that they piled
+    up while the phase ran, so the platform was already saturated.
+- **A short run measures little.** At `LOAD_SCALE=0.25` a phase is 15 seconds, so a "p95" may be one workflow. The
+  harness check is fine; do not draw capacity conclusions from it.
+- **Latency that rises across the phases of a flat profile is a finding.** In `soak`, `q4` slower than `q1` at the same
+  rate means something accumulates.
+- **The machine is small.** A 2-CPU Docker VM also hosts Kafka, Temporal and Postgres, and an `amd64` worker under
+  emulation is slower still. Compare runs on the *same* machine; absolute numbers say little.
+- **A run that finishes no workflow** reports "No workflow ran, so there is no report" and writes no result file.
+  Never read an empty result as a fast one.
+
+### Comparing two runs
+
+Each run writes `summary-load-<profile>.json`. Copy it aside before the next run overwrites it, then compare with `jq`
+(installed on most machines):
+
+```bash
+cp summary-load-throughput.json baseline-throughput.json      # keep the run you trust
+ALLOW_LOAD=true make load PROFILE=throughput                  # change something, run again
+
+jq -rs '
+  def sec: if . == null then "-" else ((. / 100 | round) / 10 | tostring) + "s" end;
+  [.[0].phases, .[1].phases] as [$a, $b]
+  | ["phase","offered/min","p95 before","p95 after","change"],
+    ( range(0; ($a|length)) as $i
+      | [ $a[$i].phase, ($a[$i].rate|tostring), ($a[$i].e2eP95|sec), ($b[$i].e2eP95|sec),
+          (if ($a[$i].e2eP95 and $b[$i].e2eP95) then "\((($b[$i].e2eP95 / $a[$i].e2eP95 - 1) * 100) | round)%" else "-" end) ] )
+  | @tsv' baseline-throughput.json summary-load-throughput.json | column -t -s $'\t'
+```
+
+```
+phase   offered/min  p95 before  p95 after  change
+step1x  6            3s          4.5s       50%
+step2x  12           1s          -          -
+step4x  24           2.8s        4.2s       50%
+step8x  48           4.5s        6.8s       50%
+```
+
+A `-` means that phase finished no workflow in one of the runs. Differences under about 20% between two runs of the same
+profile are usually noise on a small machine; run each twice before concluding anything.
+
+To keep the full k6 metrics as well, add `--out json=run.json` (large) or `--summary-export summary.json` (small).
+
+### Cleaning up
+
+A load run leaves workflow runs, objects in the `continuum-worker-storage` bucket and rows in Postgres. Everything it
+created is named with the `systest-<runId>` prefix. On a local stack `make down` removes the lot (it deletes the
+volumes). On a shared stack there is no API to delete workflow runs, so clean up by that prefix in the database and the
+bucket, and think twice before loading a shared stack at all.
+
 ## Known limitations
 
 All suites have been run successfully against the compose stack. What they do not cover yet:
@@ -172,6 +458,6 @@ All suites have been run successfully against the compose stack. What they do no
 ## Roadmap
 
 1. **Workbench suite** (the Theia UI itself; planned for later). The cluster-manager API suite is done. The gateway and knime-scheduler are not part of the core platform and have no suites.
-2. **Load profiles**: throughput, stress, spike, soak, read-heavy and a noisy-neighbour test, with per-tenant thresholds. These will be opt-in and refuse to run against an environment that is not on an allow-list.
+2. **Load tests** are in: throughput, stress, spike, soak and noisy-neighbour (above). Not done: a read-heavy profile (many tenants paging `/data`, `/workflow-runs` and `/list`), Prometheus remote-write output, and a nightly CI run.
 3. **Optional per-feature tests**: each feature declares the node classes it needs and is skipped when its worker is not deployed.
 4. **CI**: smoke, API and tenancy on every pull request; a nightly load run.

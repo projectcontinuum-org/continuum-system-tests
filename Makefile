@@ -1,4 +1,4 @@
-.PHONY: up pull down logs ps smoke tenancy api cluster-manager up-cluster-manager test check
+.PHONY: up pull down logs ps smoke tenancy api cluster-manager up-cluster-manager down-cluster-manager load noisy test check
 
 # Use the `docker compose` plugin when present, otherwise the standalone `docker-compose` binary (for example a
 # Homebrew install where the plugin directory is not registered in ~/.docker/config.json).
@@ -44,10 +44,27 @@ up-cluster-manager:
 	$(COMPOSE_BIN) -f docker/docker-compose.yml -f docker/docker-compose.cluster-manager.yml --env-file docker/.env \
 		up -d --no-deps --wait continuum-cluster-manager
 
+# Stops and removes only the cluster-manager container. It needs the overlay file to find the service, which is why
+# `make down` (main compose file only) does not touch it. Nothing else is stopped, and the database it used is left
+# alone: its workbench records stay in Postgres until `make down` removes the volumes.
+down-cluster-manager:
+	$(COMPOSE_BIN) -f docker/docker-compose.yml -f docker/docker-compose.cluster-manager.yml --env-file docker/.env \
+		rm --stop --force continuum-cluster-manager
+
 # Skips itself (and says so) when the cluster-manager is not reachable. Add CLUSTER_MANAGER_K8S=true to also run the
 # lifecycle tier, which creates real pods and needs the cluster-manager to reach a cluster.
 cluster-manager:
 	./run.sh suites/api/cluster-manager.js
+
+# Load tests REFUSE to run without ALLOW_LOAD=true, and against any host not in LOAD_ALLOWED_HOSTS (default: localhost
+# and 127.0.0.1). A run creates workflows, object-store files and database rows that cannot be deleted through the API.
+#   ALLOW_LOAD=true make load PROFILE=throughput     # throughput | stress | spike | soak
+#   ALLOW_LOAD=true make noisy
+load:
+	./run.sh load
+
+noisy:
+	./run.sh noisy
 
 # Pure-JS unit tests for lib/util.js and a syntax check of every k6 script. Needs only node, not k6 or Docker.
 test:

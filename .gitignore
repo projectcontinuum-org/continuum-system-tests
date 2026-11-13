@@ -2,5 +2,7 @@
 node_modules/
 *.log
 summary.json
+# Written by the load suites (lib/report.js) so two runs can be compared.
+summary-load-*.json
 # Local environment files hold secrets or local overrides.
 .env.local

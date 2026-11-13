@@ -10,10 +10,12 @@ if ! command -v k6 >/dev/null 2>&1; then
 fi
 
 case "${1:-}" in
-  smoke)    suite="suites/smoke.js" ;;
-  tenancy)  suite="suites/tenancy/isolation.js" ;;
-  "")       echo "usage: ./run.sh smoke | tenancy | <suite.js>" >&2; exit 2 ;;
-  *)        suite="$1" ;;
+  smoke)     suite="suites/smoke.js" ;;
+  tenancy)   suite="suites/tenancy/isolation.js" ;;
+  load)      suite="suites/load/profile.js" ;;
+  noisy)     suite="suites/load/noisy-neighbor.js" ;;
+  "")        echo "usage: ./run.sh smoke | tenancy | load | noisy | <suite.js>" >&2; exit 2 ;;
+  *)         suite="$1" ;;
 esac
 
 # One id per invocation so the tenants and workflow names of different runs never collide.
@@ -37,4 +39,22 @@ exec k6 run \
   -e AUTH_MODE="${AUTH_MODE:-header}" \
   -e TENANT_TOKENS="$TENANT_TOKENS" \
   -e WORKFLOW_TIMEOUT_SEC="${WORKFLOW_TIMEOUT_SEC:-120}" \
+  -e POLL_INTERVAL_SEC="${POLL_INTERVAL_SEC:-1}" \
+  -e ALLOW_LOAD="${ALLOW_LOAD:-false}" \
+  -e LOAD_ALLOWED_HOSTS="${LOAD_ALLOWED_HOSTS:-localhost,127.0.0.1}" \
+  -e PROFILE="${PROFILE:-throughput}" \
+  -e BASE_RATE_PER_MIN="${BASE_RATE_PER_MIN:-6}" \
+  -e LOAD_SCALE="${LOAD_SCALE:-1}" \
+  -e SOAK_SEC="${SOAK_SEC:-600}" \
+  -e LOAD_TENANTS="${LOAD_TENANTS:-10}" \
+  -e MAX_VUS="${MAX_VUS:-100}" \
+  -e E2E_P95_MAX_MS="${E2E_P95_MAX_MS:-30000}" \
+  -e START_P95_MAX_MS="${START_P95_MAX_MS:-1000}" \
+  -e QUIET_RATE_PER_MIN="${QUIET_RATE_PER_MIN:-${BASE_RATE_PER_MIN:-6}}" \
+  -e NOISY_FACTOR="${NOISY_FACTOR:-8}" \
+  -e FAIRNESS_MAX_RATIO="${FAIRNESS_MAX_RATIO:-2}" \
+  -e FAIRNESS_SLACK_MS="${FAIRNESS_SLACK_MS:-2000}" \
+  -e CALIBRATION_RUNS="${CALIBRATION_RUNS:-6}" \
+  -e ALONE_SEC="${ALONE_SEC:-120}" \
+  -e NOISE_SEC="${NOISE_SEC:-180}" \
   "${@:2}" "$suite"
