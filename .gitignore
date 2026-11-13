@@ -1,0 +1,6 @@
+.DS_Store
+node_modules/
+*.log
+summary.json
+# Local environment files hold secrets or local overrides.
+.env.local

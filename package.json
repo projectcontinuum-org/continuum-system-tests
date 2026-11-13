@@ -1,0 +1,11 @@
+{
+  "name": "continuum-system-tests",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Grafana k6 system, multi-tenant and load tests for Project Continuum",
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "check": "for f in lib/*.js suites/*.js suites/*/*.js; do node --check \"$f\" || exit 1; done"
+  }
+}
