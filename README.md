@@ -2,7 +2,7 @@
 
 System, multi-tenant and load tests for [Project Continuum](https://github.com/projectcontinuum-org), written for [Grafana k6](https://k6.io). The tests are black-box: they call the platform's REST APIs on a running stack and never import platform code.
 
-> **Status:** early. Only `smoke` and `tenancy/isolation` exist so far. The API suites, load profiles and per-feature tests are planned (see [Roadmap](#roadmap)). The suites have not yet been run against a live stack.
+> **Status:** early. Only `smoke` and `tenancy/isolation` exist so far, and both pass against the docker-compose stack. The API suites, load profiles and per-feature tests are planned (see [Roadmap](#roadmap)).
 
 ## What is tested
 
@@ -119,11 +119,11 @@ See [AGENTS.md](AGENTS.md) for the full contracts.
 
 ## Known limitations
 
-These come from reading the platform source. Nothing has been confirmed against a live stack yet.
+Both suites have been run successfully against the compose stack. What they do not cover yet:
 
-- The shape of the node-registration endpoint's answer for an unregistered node is unconfirmed. If smoke stops with "feature-base is not serving", check that first.
+- The branch for a node that is **not** registered (the "feature-base is not serving" failure) has not been exercised, only the case where the nodes are present.
 - Credential responses are asserted by status code and `name` only.
-- The fixture is loaded with a path relative to `lib/`. If k6 resolves it differently, the first run fails with a file-not-found error.
+- The isolation suite has been seen to pass, but not to fail. Before relying on it, break an ownership check on purpose (for example remove the owner check in the api-server's `cancelWorkflow`) and confirm the run goes red.
 
 ## Roadmap
 
