@@ -84,7 +84,7 @@ make down       # stop the stack and delete its volumes
 `docker/docker-compose.yml` is a copy of the compose file in `continuum-feature-template/docker/`, with one change: the four platform images use one variable.
 
 ```bash
-CONTINUUM_PLATFORM_VERSION=0.0.22 make up   # default: 0.0.21
+CONTINUUM_PLATFORM_VERSION=0.0.24 make up   # default: 0.0.23
 ```
 
 It pins `continuum-api-server`, `-orchestration-service`, `-message-bridge` and `-credentials-server`. The workbench and the feature workers have their own versions and are not affected.
@@ -93,7 +93,7 @@ It pins `continuum-api-server`, `-orchestration-service`, `-message-bridge` and 
 
 Set `CONTINUUM_PLATFORM_VERSION` before every `make` command that touches the stack. If it is missing, Compose recreates the containers on the default version.
 
-To re-sync with the template, copy its compose file over `docker/docker-compose.yml` and re-apply the four `${CONTINUUM_PLATFORM_VERSION:-0.0.21}` image tags.
+To re-sync with the template, copy its compose file over `docker/docker-compose.yml` and re-apply the four `${CONTINUUM_PLATFORM_VERSION:-0.0.23}` image tags.
 
 ## Running against another environment
 

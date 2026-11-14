@@ -6,7 +6,7 @@
 
 ## Ownership
 
-- `docker/`: the stack under test. `docker-compose.yml` is a copy of `continuum-feature-template/docker/docker-compose.yml` with one change: the four platform images (api-server, orchestration-service, message-bridge, credentials-server) use `${CONTINUUM_PLATFORM_VERSION:-0.0.21}`. `postgres/`, `temporal/` and `mosquitto/` are copies of the config next to it.
+- `docker/`: the stack under test. `docker-compose.yml` is a copy of `continuum-feature-template/docker/docker-compose.yml` with one change: the four platform images (api-server, orchestration-service, message-bridge, credentials-server) use `${CONTINUUM_PLATFORM_VERSION:-0.0.23}`. `postgres/`, `temporal/` and `mosquitto/` are copies of the config next to it.
 - `lib/`: helpers shared by every suite (`config`, `tenant`, `workflows`, `capabilities`, `metrics`, and the pure `util.js`).
 - `suites/`: k6 scripts. `smoke.js`, `tenancy/isolation.js` and `api/{workflow,runs,schedules,node-explorer,data,credentials,cluster-manager}.js` exist today. Scope: the core platform only. The workbench UI is planned; the cloud-gateway and knime-scheduler are not part of the core platform and have no suites.
 - `fixtures/workflows/`: workflow models posted to the api-server.
@@ -40,7 +40,7 @@
 ## Work Guidance
 
 - When the template compose changes, copy it over again and re-apply the `CONTINUUM_PLATFORM_VERSION` substitution on the four platform images; make no other hand edits to `docker/docker-compose.yml`.
-- Test another platform release with `CONTINUUM_PLATFORM_VERSION=0.0.22 make up`. Set it before every `make` target that touches the stack, or compose falls back to the default and recreates containers on the old version.
+- Test another platform release with `CONTINUUM_PLATFORM_VERSION=0.0.24 make up`. Set it before every `make` target that touches the stack, or compose falls back to the default and recreates containers on the old version.
 - Assert status codes and the fields the suites rely on, not whole response bodies.
 - The `temporalStatus` field of `/status` may arrive as a name or an ordinal; always go through `normalizeStatus`.
 - A 404 or 500 from `/status` right after a start can be Temporal visibility lag; poll, do not fail on the first miss.

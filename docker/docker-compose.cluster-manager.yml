@@ -11,7 +11,7 @@
 #       KUBERNETES_MASTER_URL=https://host.docker.internal:6443
 services:
   continuum-cluster-manager:
-    image: projectcontinuum/continuum-cluster-manager:${CONTINUUM_PLATFORM_VERSION:-0.0.21}
+    image: projectcontinuum/continuum-cluster-manager:${CONTINUUM_PLATFORM_VERSION:-0.0.23}
     container_name: continuum-cluster-manager
     ports:
       # 8082 is the port the cloud-gateway expects the cluster-manager on
