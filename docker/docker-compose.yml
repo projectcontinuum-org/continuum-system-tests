@@ -404,7 +404,7 @@ services:
       - temporal-network
     restart: unless-stopped
   continuum-feature-base:
-    image: projectcontinuum/continuum-feature-base:0.0.8
+    image: projectcontinuum/continuum-feature-base:0.0.10
     container_name: continuum-feature-base
     environment:
       CONTINUUM_KAFKA_MAIN_BROKER_LIST: PLAINTEXT://kafka1:19092,PLAINTEXT://kafka2:19092,PLAINTEXT://kafka3:19092
@@ -434,7 +434,7 @@ services:
       - temporal-network
     restart: unless-stopped
   continuum-feature-cheminformatics:
-    image: projectcontinuum/continuum-feature-cheminformatics:0.0.6
+    image: projectcontinuum/continuum-feature-cheminformatics:0.0.7
     container_name: continuum-feature-cheminformatics
     environment:
       CONTINUUM_KAFKA_MAIN_BROKER_LIST: PLAINTEXT://kafka1:19092,PLAINTEXT://kafka2:19092,PLAINTEXT://kafka3:19092
