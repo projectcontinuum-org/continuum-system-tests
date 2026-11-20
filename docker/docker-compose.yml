@@ -394,7 +394,7 @@ services:
       CONTINUUM_API_SERVER_MCP_URL: http://continuum-api-server:8080/mcp
       SHELL: /bin/bash
     volumes:
-      - ./example-workflows:/home/node/example-workflows
+      - ./example-workflows:/home/continuum/workspace
     depends_on:
       continuum-api-server:
         condition: service_healthy
