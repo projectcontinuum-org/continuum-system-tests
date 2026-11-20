@@ -388,7 +388,7 @@ services:
       start_period: 30s
     restart: unless-stopped
   continuum-workbench:
-    image: projectcontinuum/continuum-workbench:0.0.14
+    image: projectcontinuum/continuum-workbench:0.0.16
     container_name: continuum-workbench
     environment:
       CONTINUUM_API_SERVER_MCP_URL: http://continuum-api-server:8080/mcp
