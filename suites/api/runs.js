@@ -5,7 +5,6 @@ import { cfg } from '../../lib/config.js';
 import { tenant, tenantIds } from '../../lib/tenant.js';
 import { FIXTURE_NODES, missingNodes } from '../../lib/capabilities.js';
 import { startWorkflow, waitForRecord, waitForTerminal } from '../../lib/workflows.js';
-import { knownGap } from '../../lib/checks.js';
 import { newRunId, outputsOf, safeJson } from '../../lib/util.js';
 
 export const options = {
@@ -77,8 +76,10 @@ export default function (d) {
   check(noMatch, { 'filter with no match returns an empty page': (b) => Array.isArray(b.content) && b.content.length === 0 });
   const byUri = safeJson(t.get(A, `${R}?filter=${encodeURIComponent(`workflowUri=="${d.uri}"`)}`).body) || {};
   check(byUri, { 'filter by a quoted workflowUri finds the run': (b) => (b.content || []).some((r) => r.workflowId === d.workflowId) });
-  // A malformed filter is a client error, but today it is a 500 (no handler for the parse failure).
-  knownGap('runs: malformed RSQL filter returns 500, want 400', t.get(A, `${R}?filter=${encodeURIComponent('((bad')}`), [400]);
+  // A malformed filter, an unknown field and a value of the wrong type are client errors.
+  check(t.get(A, `${R}?filter=${encodeURIComponent('((bad')}`), { 'a malformed RSQL filter is 400': (r) => r.status === 400 });
+  check(t.get(A, `${R}?filter=${encodeURIComponent('noSuchField==1')}`), { 'an unknown RSQL field is 400': (r) => r.status === 400 });
+  check(t.get(A, `${R}/count?filter=${encodeURIComponent('createdAt==notadate')}`), { 'a malformed RSQL date is 400': (r) => r.status === 400 });
 
   // --- by id: the full record, including the workflow snapshot and the stored outputs
   const one = t.get(A, `${R}/${id}`, { endpoint: 'run_get' });

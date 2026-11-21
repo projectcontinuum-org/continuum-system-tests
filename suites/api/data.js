@@ -6,7 +6,6 @@ import { cfg } from '../../lib/config.js';
 import { tenant, tenantIds } from '../../lib/tenant.js';
 import { FIXTURE_NODES, missingNodes } from '../../lib/capabilities.js';
 import { outputPath, startWorkflow, waitForRecord, waitForTerminal } from '../../lib/workflows.js';
-import { knownGap } from '../../lib/checks.js';
 import { isProblemJson, newRunId, outputsOf, safeJson } from '../../lib/util.js';
 
 export const options = {
@@ -112,7 +111,7 @@ export default function (d) {
   const unknown = t.get(A, outputPath({ ...out, runId: 'no-such-run' }));
   check(denied, { 'an unowned run and an unknown run give the same answer': (r) => r.body === unknown.body.replace('no-such-run', out.runId) || (safeJson(r.body) || {}).detail === (safeJson(unknown.body) || {}).detail });
 
-  // --- an owned run with a node or port that has no stored file. Today the missing S3 object is an unhandled 500.
-  knownGap('data: output port with no stored file returns 500, want 404', t.get(A, outputPath({ ...out, outputId: 'no-such-port' })), [404]);
-  knownGap('data: node with no stored file returns 500, want 404', t.get(A, outputPath({ ...out, nodeId: '999' })), [404]);
+  // --- an owned run with a node or port that has no stored file is not found.
+  check(t.get(A, outputPath({ ...out, outputId: 'no-such-port' })), { 'an output port with no stored file is 404': (r) => r.status === 404 });
+  check(t.get(A, outputPath({ ...out, nodeId: '999' })), { 'a node with no stored file is 404': (r) => r.status === 404 });
 }

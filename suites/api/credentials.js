@@ -4,7 +4,6 @@
 import { check } from 'k6';
 import { cfg } from '../../lib/config.js';
 import { tenant, tenantIds } from '../../lib/tenant.js';
-import { knownGap } from '../../lib/checks.js';
 import { newRunId, safeJson } from '../../lib/util.js';
 
 export const options = {
@@ -80,10 +79,9 @@ export default function (d) {
     check(create({ ...valid, name: `${name}-nodata`, data: {} }), { 'empty data is 400': (r) => r.status === 400 });
     check(create({ ...valid, name: `${name}-notype`, type: 'no-such-type' }), { 'an unknown type is 404': (r) => r.status === 404 });
     check(create({ ...valid, name: `${name}-nover`, typeVersion: '9.9.9' }), { 'an unknown type version is 404': (r) => r.status === 404 });
-    // A body that cannot be parsed, or that lacks a required field, is a client error. Today the server's catch-all
-    // handler turns the parse failure into a 500 "Internal server error" (the field validators do give 400).
-    knownGap('credentials: create with a missing name returns 500, want 400', create({ type, typeVersion: '1.0.0', data: { a: 'b' } }), [400]);
-    knownGap('credentials: create with a non-JSON body returns 500, want 400', t.post(U, C, 'garbage'), [400]);
+    // A body that cannot be parsed, or that lacks a required field, is a client error.
+    check(create({ type, typeVersion: '1.0.0', data: { a: 'b' } }), { 'a create with a missing name is 400': (r) => r.status === 400 });
+    check(t.post(U, C, 'garbage'), { 'a create with a non-JSON body is 400': (r) => r.status === 400 });
 
     // --- credentials: read
     const got = t.get(U, `${C}/${name}`, { endpoint: 'cred_get' });

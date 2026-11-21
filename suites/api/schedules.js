@@ -6,7 +6,6 @@ import { cfg } from '../../lib/config.js';
 import { tenant, tenantIds } from '../../lib/tenant.js';
 import { FIXTURE_NODES, missingNodes } from '../../lib/capabilities.js';
 import { workflowModel } from '../../lib/workflows.js';
-import { knownGap } from '../../lib/checks.js';
 import { newRunId, pageContent, safeJson } from '../../lib/util.js';
 
 export const options = {
@@ -46,7 +45,7 @@ export default function (d) {
       created.push(sch.scheduleId);
     }
     check(res, {
-      'create is 200': (r) => r.status === 200,
+      'create is 201': (r) => r.status === 201,
       'the schedule has an id, its name and the caller as owner': () => !!sch.scheduleId && sch.name === name && sch.ownedBy === d.owner,
       'the schedule echoes the cron expression and starts unpaused': () => sch.cronExpression === NEVER && sch.paused === false,
       'the schedule lists its upcoming runs': () => Array.isArray(sch.nextRunTimes) && sch.nextRunTimes.length > 0,
@@ -124,7 +123,7 @@ export default function (d) {
     check(t.get(A, `${S}/${id}`), { 'the schedule survived the other tenant\'s attempts': (r) => r.status === 200 });
 
     // --- a malformed RSQL filter is a client error, but today it is a 500
-    knownGap('schedules: malformed RSQL filter returns 500, want 400', t.get(A, `${S}/filter?filter=${encodeURIComponent('((bad')}`), [400]);
+    check(t.get(A, `${S}/filter?filter=${encodeURIComponent('((bad')}`), { 'a malformed RSQL filter is 400': (r) => r.status === 400 });
 
     // --- delete
     check(t.del(A, `${S}/${id}`), { 'delete is 204': (r) => r.status === 204 });

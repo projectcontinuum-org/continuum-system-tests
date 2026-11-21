@@ -12,7 +12,6 @@ import http from 'k6/http';
 import { check, sleep } from 'k6';
 import { cfg } from '../../lib/config.js';
 import { tenant, tenantIds } from '../../lib/tenant.js';
-import { knownGap } from '../../lib/checks.js';
 import { newRunId, safeJson } from '../../lib/util.js';
 
 export const options = {
@@ -41,8 +40,7 @@ export function setup() {
 // A request body the service must reject before it reaches Kubernetes.
 const body = (name, extra = {}) => ({ instanceName: name, ...extra });
 
-// A complete `resources` object with one field replaced. The service needs every resource field: a partial object
-// is a 500 today (see the known gap below), which would hide the validation these requests are meant to reach.
+// A complete `resources` object with one field replaced, so each request checks exactly one field.
 const resources = (override) => ({
   cpuRequest: '500m',
   cpuLimit: '2',
@@ -138,13 +136,14 @@ export default function (d) {
     const res = t.post(U, W, body('var-1', { variant: bad }), { endpoint: 'wb_create_rejected' });
     check(res, { [`a variant that is ${name} is rejected (400)`]: (r) => r.status === 400 });
   }
-  // Malformed JSON and a missing instanceName are client errors. Today the generic handler makes them 500.
+  // Malformed JSON and a missing instanceName are client errors.
   // (Only requests that cannot succeed are sent here: a valid-looking create would start a real pod on a cluster.)
-  knownGap('workbench: create with a non-JSON body returns 500, want 400', t.post(U, W, 'garbage'), [400]);
-  knownGap('workbench: create with no instanceName returns 500, want 400', t.post(U, W, { image: 'projectcontinuum/continuum-workbench:0.0.14' }), [400]);
-  // A `resources` object that omits a field also fails to parse (Kotlin non-null fields without defaults on the
-  // request path), so a client that only wants to change the memory limit gets a 500.
-  knownGap('workbench: create with a partial resources object returns 500, want 400', t.post(U, W, body('partial-1', { resources: { memoryLimit: '1Gi' } })), [400]);
+  check(t.post(U, W, 'garbage'), { 'a create with a non-JSON body is 400': (r) => r.status === 400 });
+  check(t.post(U, W, { image: 'projectcontinuum/continuum-workbench:0.0.14' }), { 'a create with no instanceName is 400': (r) => r.status === 400 });
+  // A partial `resources` object parses (omitted fields take their defaults) and reaches validation.
+  check(t.post(U, W, body('partial-1', { resources: { memoryLimit: '1Gi\n---\nkind: Secret' } })), {
+    'a partial resources object reaches validation (400 for the bad field)': (r) => r.status === 400 && /memoryLimit/.test((safeJson(r.body) || {}).error || ''),
+  });
 
   // --- update validation (an unknown workbench is 404 first, so this is checked on the live one in tier 2)
 
@@ -202,7 +201,7 @@ function lifecycle(d, t, o, U) {
 
     // --- a second create with the same name while it is active is a conflict
     const dup = t.post(U, W, { instanceName: name, image, resources: small });
-    check(dup, { 'creating the same name again is 400 and says it exists': (r) => r.status === 400 && /already exists/.test((safeJson(r.body) || {}).error || '') });
+    check(dup, { 'creating the same name again is 409 and says it exists': (r) => r.status === 409 && /already exists/.test((safeJson(r.body) || {}).error || '') });
 
     // --- status, list
     check(t.get(U, `${W}/${name}`), { 'status is 200 and returns the workbench': (r) => r.status === 200 && (safeJson(r.body) || {}).instanceName === name });
@@ -240,10 +239,9 @@ function lifecycle(d, t, o, U) {
     check(sus, { 'suspend is 200': (r) => r.status === 200, 'a suspended workbench reports SUSPENDED': (r) => (safeJson(r.body) || {}).status === 'SUSPENDED' });
     check(t.put(U, `${W}/${name}/suspend`, null), { 'suspending twice is 400 ("already suspended")': (r) => r.status === 400 && /already suspended/.test((safeJson(r.body) || {}).error || '') });
     check(safeJson(t.get(U, `${W}/${name}/liveness`).body) || {}, { 'a suspended workbench is not ready': (l) => l.ready === false });
-    // Reading the status of a suspended workbench re-derives it from Kubernetes, where the Deployment is gone. That
+    // Reading a suspended workbench must not re-derive its status from Kubernetes, where the Deployment is gone: that
     // used to turn SUSPENDED into UNKNOWN, after which resume (which needs SUSPENDED) was impossible.
-    const afterGet = safeJson(t.get(U, `${W}/${name}`).body) || {};
-    knownGapValue('workbench: reading a suspended workbench changes its status', afterGet.status === 'SUSPENDED', `status became ${afterGet.status}`);
+    check(safeJson(t.get(U, `${W}/${name}`).body) || {}, { 'reading a suspended workbench keeps it SUSPENDED': (w) => w.status === 'SUSPENDED' });
     const res2 = t.put(U, `${W}/${name}/resume`, null);
     check(res2, { 'resume is 200': (r) => r.status === 200 });
     const ready2 = waitUntil(() => safeJson(t.get(U, `${W}/${name}/liveness`).body), (l) => l && l.ready === true, cfg.clusterReadyTimeoutSec);
@@ -283,12 +281,4 @@ function waitUntil(read, done, timeoutSec) {
     sleep(3);
   }
   return value;
-}
-
-/** Like knownGap, for a condition that is not an HTTP status. */
-function knownGapValue(name, ok, detail) {
-  knownGap(name, { status: ok ? 200 : 0 }, [200]);
-  if (!ok) {
-    console.warn(`  detail: ${detail}`);
-  }
 }
