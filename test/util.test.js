@@ -5,7 +5,6 @@ import {
   isProblemJson,
   isTerminal,
   newRunId,
-  normalizeStatus,
   outputsOf,
   pageContent,
   parseStoredPath,
@@ -14,27 +13,12 @@ import {
   safeJson,
 } from '../lib/util.js';
 
-test('normalizeStatus accepts the proto name, the short name and the ordinal', () => {
-  assert.equal(normalizeStatus('WORKFLOW_EXECUTION_STATUS_COMPLETED'), 'COMPLETED');
-  assert.equal(normalizeStatus('completed'), 'COMPLETED');
-  assert.equal(normalizeStatus(2), 'COMPLETED');
-  assert.equal(normalizeStatus('2'), 'COMPLETED');
-  assert.equal(normalizeStatus(1), 'RUNNING');
-  assert.equal(normalizeStatus(7), 'TIMED_OUT');
-});
-
-test('normalizeStatus returns UNKNOWN for anything it cannot read', () => {
-  for (const v of [undefined, null, '', 99, {}, []]) {
-    assert.equal(normalizeStatus(v), 'UNKNOWN');
-  }
-});
-
-test('only finished statuses are terminal', () => {
-  for (const s of ['COMPLETED', 'FAILED', 'CANCELED', 'TERMINATED', 'TIMED_OUT', 'CONTINUED_AS_NEW']) {
+test('only final run statuses are terminal', () => {
+  for (const s of ['FINISHED', 'FAILED', 'CANCELLED', 'TERMINATED']) {
     assert.equal(isTerminal(s), true, s);
   }
-  for (const s of ['RUNNING', 'UNKNOWN', 'UNSPECIFIED']) {
-    assert.equal(isTerminal(s), false, s);
+  for (const s of ['PENDING', 'STARTED', 'RUNNING', undefined, '']) {
+    assert.equal(isTerminal(s), false, String(s));
   }
 });
 

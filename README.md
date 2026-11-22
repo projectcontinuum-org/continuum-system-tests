@@ -8,7 +8,7 @@ System, multi-tenant and load tests for [Project Continuum](https://github.com/p
 
 | Suite | What it checks | Fails the run when |
 |---|---|---|
-| `suites/smoke.js` | api-server and credentials-server health, the feature-base nodes are registered, one workflow runs to `COMPLETED`, a credential create/read/delete round trip | any check fails |
+| `suites/smoke.js` | api-server and credentials-server health, the feature-base nodes are registered, one workflow runs to `FINISHED`, a credential create/read/delete round trip | any check fails |
 | `suites/tenancy/isolation.js` | tenant B cannot read or act on tenant A's workflow runs, node output, credentials or schedules, and A can still read their own output | any isolation check fails (`isolation_violations` must be 0) |
 | `suites/api/workflow.js` | start, status, list, count (with `GROUP BY`), tree, active, cancel and terminate (running, finished and unknown ids), query-injection rejection | any check fails |
 | `suites/api/runs.js` | run list and paging, RSQL filter, get by id, count, distinct workflows | any check fails |
@@ -18,7 +18,7 @@ System, multi-tenant and load tests for [Project Continuum](https://github.com/p
 | `suites/api/credentials.js` | credential types and credentials CRUD, validation, per-tenant namespaces | any check fails |
 | `suites/api/cluster-manager.js` | workbench API: input validation (CONTNM-161), 404s, authorize, tenant scoping; with a cluster, the full create / suspend / resume / update / delete lifecycle | any check fails. Skips when the service is not reachable. |
 
-The isolation suite covers `/status`, `/cancel`, `/terminate`, `/active`, `/list`, `/count`, `/tree`, `/workflow-runs`, `/api/v1/data/...`, credentials and schedules.
+The isolation suite covers `/cancel`, `/terminate`, `/workflow-runs` (list, by id, distinct workflows), `/api/v1/data/...`, credentials and schedules.
 
 ### Cluster-manager suite (optional)
 
@@ -53,7 +53,7 @@ Behaviour that is wrong today is reported, not failed. The suite asserts the sta
 
 | Where | Today | Want |
 |---|---|---|
-| a malformed RSQL `filter` on `/workflow-runs` and `/workflow/schedule/filter` | 500 | 400 |
+| a malformed RSQL `filter` on `/workflow-runs` | 500 | 400 |
 | `/api/v1/data` for a port or node with no stored file | 500 | 404 |
 | credential create with a missing field or a non-JSON body | 500 | 400 |
 | workbench create with a non-JSON body or no `instanceName` | 500 | 400 |
@@ -158,8 +158,7 @@ These do not need k6 or Docker. They do not run the suites.
 - Make every request through `tenant(id)` from `lib/tenant.js`, so it carries the header and the metric tag.
 - Take base URLs from `lib/config.js`. Do not hardcode ports.
 - Assert status codes and the fields you depend on, not whole response bodies.
-- `temporalStatus` can come back as a name or a number. Read it with `normalizeStatus`.
-- A 404 or 500 from `/status` right after starting a workflow can be Temporal visibility lag. Poll instead of failing on the first miss (`waitForTerminal` does this).
+- Read a run's state from its record (`getStatus` / `waitForTerminal` in `lib/workflows.js`, `GET /api/v1/workflow-runs/{id}`). A successful run ends `FINISHED`. The record is written asynchronously, so poll instead of failing on the first read.
 - A test that needs an optional feature worker must check `lib/capabilities.js` first and skip when the nodes are absent.
 - Keep k6-only code (`k6/http`, `open()`) out of `lib/util.js`.
 

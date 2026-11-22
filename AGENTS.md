@@ -42,8 +42,7 @@
 - When the template compose changes, copy it over again and re-apply the `CONTINUUM_PLATFORM_VERSION` substitution on the four platform images; make no other hand edits to `docker/docker-compose.yml`.
 - Test another platform release with `CONTINUUM_PLATFORM_VERSION=0.0.24 make up`. Set it before every `make` target that touches the stack, or compose falls back to the default and recreates containers on the old version.
 - Assert status codes and the fields the suites rely on, not whole response bodies.
-- The `temporalStatus` field of `/status` may arrive as a name or an ordinal; always go through `normalizeStatus`.
-- A 404 or 500 from `/status` right after a start can be Temporal visibility lag; poll, do not fail on the first miss.
+- A run's state comes from its record, `GET /api/v1/workflow-runs/{workflowId}` (`getStatus` / `waitForTerminal` in `lib/workflows.js`). Final statuses are `FINISHED`, `FAILED`, `CANCELLED` and `TERMINATED`; a successful run is `FINISHED`. The message-bridge writes the record asynchronously, so poll, do not fail on the first read.
 
 ## Verification
 

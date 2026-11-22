@@ -1,4 +1,4 @@
-// api-server: /api/v1/workflow-runs (list + paging, filter, get by id, count, distinct-workflows).
+// api-server: /api/v1/workflow-runs (list + paging, filter, get by id, distinct-workflows).
 //   ./run.sh suites/api/runs.js
 import { check, fail } from 'k6';
 import { cfg } from '../../lib/config.js';
@@ -79,7 +79,7 @@ export default function (d) {
   // A malformed filter, an unknown field and a value of the wrong type are client errors.
   check(t.get(A, `${R}?filter=${encodeURIComponent('((bad')}`), { 'a malformed RSQL filter is 400': (r) => r.status === 400 });
   check(t.get(A, `${R}?filter=${encodeURIComponent('noSuchField==1')}`), { 'an unknown RSQL field is 400': (r) => r.status === 400 });
-  check(t.get(A, `${R}/count?filter=${encodeURIComponent('createdAt==notadate')}`), { 'a malformed RSQL date is 400': (r) => r.status === 400 });
+  check(t.get(A, `${R}?filter=${encodeURIComponent('createdAt==notadate')}`), { 'a malformed RSQL date is 400': (r) => r.status === 400 });
 
   // --- by id: the full record, including the workflow snapshot and the stored outputs
   const one = t.get(A, `${R}/${id}`, { endpoint: 'run_get' });
@@ -92,12 +92,6 @@ export default function (d) {
   });
   check(t.get(A, `${R}/no-such-run`), { 'get of an unknown id is 404': (r) => r.status === 404 });
 
-  // --- count
-  const count = safeJson(t.get(A, `${R}/count`).body) || {};
-  check(count, { 'count is 1': (c) => c.count === 1 });
-  const none = safeJson(t.get(A, `${R}/count?filter=${encodeURIComponent('status==NO_SUCH_STATUS')}`).body) || {};
-  check(none, { 'count with a filter that matches nothing is 0': (c) => c.count === 0 });
-
   // --- distinct workflows (by workflowUri)
   const distinct = safeJson(t.get(A, `${R}/distinct-workflows`).body) || {};
   check(distinct, {
@@ -109,7 +103,6 @@ export default function (d) {
   const otherList = safeJson(o.get(A, `${R}`).body) || {};
   check(otherList, { 'other tenant\'s list is empty': (b) => Array.isArray(b.content) && b.content.length === 0 });
   check(o.get(A, `${R}/${id}`), { 'other tenant gets 404 for the run': (r) => r.status === 404 });
-  check(safeJson(o.get(A, `${R}/count`).body) || {}, { 'other tenant\'s count is 0': (c) => c.count === 0 });
   const otherDistinct = safeJson(o.get(A, `${R}/distinct-workflows`).body) || {};
   check(otherDistinct, { 'other tenant\'s distinct-workflows is empty': (b) => (b.content || []).length === 0 });
 }

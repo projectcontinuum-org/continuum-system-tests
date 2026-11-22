@@ -1,4 +1,4 @@
-// api-server: /api/v1/workflow/schedule (create, get, list, filter, pause, unpause, trigger, delete).
+// api-server: /api/v1/workflow/schedule (create, get, list, pause, unpause, trigger, delete).
 // Schedules use a far-future cron, so they never fire on their own; `trigger` is the only thing that starts a run.
 //   ./run.sh suites/api/schedules.js
 import { check, fail, sleep } from 'k6';
@@ -67,15 +67,13 @@ export default function (d) {
     check(t.get(A, `${S}/00000000-0000-0000-0000-000000000000`), { 'get of an unknown id is 404': (r) => r.status === 404 });
     check(t.get(A, `${S}/not-a-uuid`), { 'get of a non-UUID id is 400': (r) => r.status === 400 });
 
-    // --- list, by name, and by RSQL filter
+    // --- list, and by name
     const all = safeJson(t.get(A, S).body) || [];
     check(all, { 'list contains the schedule': (l) => Array.isArray(l) && l.some((s) => s.scheduleId === id) });
     const byName = safeJson(t.get(A, `${S}?name=${encodeURIComponent(name)}`).body) || [];
     check(byName, { 'list by name finds the schedule': (l) => l.some((s) => s.scheduleId === id) });
     const noName = safeJson(t.get(A, `${S}?name=no-such-name-${d.runId}`).body) || [];
     check(noName, { 'list by a name that does not match is empty': (l) => Array.isArray(l) && l.length === 0 });
-    const byFilter = safeJson(t.get(A, `${S}/filter?filter=${encodeURIComponent(`name==${name}`)}`).body) || [];
-    check(byFilter, { 'filter by name finds the schedule': (l) => l.some((s) => s.scheduleId === id) });
 
     // --- pause / unpause: the paused flag changes, and repeating either is accepted
     check(t.post(A, `${S}/${id}/pause?note=system-test`, null), { 'pause is 204': (r) => r.status === 204 });
@@ -117,13 +115,10 @@ export default function (d) {
     check(o.post(A, `${S}/${id}/trigger`, null), { 'other tenant cannot trigger it': (r) => r.status === 404 });
     check(o.del(A, `${S}/${id}`), { 'other tenant cannot delete it': (r) => r.status === 404 });
     check(safeJson(o.get(A, S).body) || [], { 'other tenant\'s list is empty': (l) => Array.isArray(l) && l.length === 0 });
-    check(safeJson(o.get(A, `${S}/filter?filter=${encodeURIComponent(`name==${name}`)}`).body) || [], {
-      'other tenant\'s filter finds nothing': (l) => Array.isArray(l) && l.length === 0,
+    check(safeJson(o.get(A, `${S}?name=${encodeURIComponent(name)}`).body) || [], {
+      'other tenant\'s list by name finds nothing': (l) => Array.isArray(l) && l.length === 0,
     });
     check(t.get(A, `${S}/${id}`), { 'the schedule survived the other tenant\'s attempts': (r) => r.status === 200 });
-
-    // --- a malformed RSQL filter is a client error, but today it is a 500
-    check(t.get(A, `${S}/filter?filter=${encodeURIComponent('((bad')}`), { 'a malformed RSQL filter is 400': (r) => r.status === 400 });
 
     // --- delete
     check(t.del(A, `${S}/${id}`), { 'delete is 204': (r) => r.status === 204 });

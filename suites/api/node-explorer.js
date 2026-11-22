@@ -63,14 +63,12 @@ export default function (d) {
     'a search with no match is an empty list': (r) => r.status === 200 && (safeJson(r.body) || []).length === 0,
   });
 
-  // --- documentation, by path and by query parameter
+  // --- documentation
   const doc = t.get(A, `${N}/nodes/${ANOMALY}/documentation`, { endpoint: 'ne_doc' });
   check(doc, {
     'documentation is 200 markdown': (r) => r.status === 200 && String(r.headers['Content-Type']).indexOf('text/markdown') === 0,
     'documentation starts with a heading': (r) => r.body.trim().indexOf('#') === 0,
   });
-  const docQ = t.get(A, `${N}/nodes/documentation?nodeId=${encodeURIComponent(ANOMALY)}`);
-  check(docQ, { 'documentation by query parameter returns the same text': (r) => r.status === 200 && r.body === doc.body });
   check(t.get(A, `${N}/nodes/no.such.Node/documentation`), { 'documentation of an unknown node is 404': (r) => r.status === 404 });
 
   // --- task-queue lookup: only registered nodes are in the answer

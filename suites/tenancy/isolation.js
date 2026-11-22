@@ -72,14 +72,14 @@ export default function (d) {
   const wf = encodeURIComponent(d.workflowId);
 
   check(d, {
-    'setup: alice workflow completed': (x) => x.final === 'COMPLETED',
+    'setup: alice workflow finished': (x) => x.final === 'FINISHED',
     'setup: alice credential created': (x) => x.credStatus === 201,
     'setup: alice schedule created': (x) => !!x.scheduleId,
     'setup: found alice\'s stored output path (run id, node, port)': (x) => !!x.output,
   });
 
   // Sanity: alice can see her own things, so a 404 for bob means "not yours", not "broken".
-  check(alice.get(cfg.apiServer, `/api/v1/workflow/${wf}/status`), { 'alice sees her workflow status': (r) => r.status === 200 });
+  check(alice.get(cfg.apiServer, `/api/v1/workflow-runs/${wf}`), { 'alice sees her run record': (r) => r.status === 200 });
   check(alice.get(cfg.credentials, `/api/v1/credentials/${d.credName}`), { 'alice reads her credential': (r) => r.status === 200 });
 
   // The owner CAN read their own node output. This is the check that was missing when ownership scoping broke it:
@@ -97,7 +97,6 @@ export default function (d) {
   }
 
   // --- Workflow API: by id -> 404 for bob.
-  expectHidden(bob.get(cfg.apiServer, `/api/v1/workflow/${wf}/status`), 'workflow status', d.b);
   expectHidden(bob.post(cfg.apiServer, `/api/v1/workflow/${wf}/cancel`, null), 'workflow cancel', d.b);
   expectHidden(bob.post(cfg.apiServer, `/api/v1/workflow/${wf}/terminate`, null), 'workflow terminate', d.b);
   expectHidden(bob.get(cfg.apiServer, `/api/v1/workflow-runs/${wf}`), 'run record', d.b);
@@ -110,23 +109,17 @@ export default function (d) {
       expectHidden({ status: 200 }, `${name} leak`, d.b);
     }
   };
-  noLeak('list', bob.get(cfg.apiServer, '/api/v1/workflow/list'));
-  noLeak('active', bob.get(cfg.apiServer, '/api/v1/workflow/active'));
-  noLeak('tree', bob.get(cfg.apiServer, '/api/v1/workflow/tree?baseDir=%2F'));
   noLeak('runs', bob.get(cfg.apiServer, '/api/v1/workflow-runs?size=100'));
-  const bobCount = bob.get(cfg.apiServer, '/api/v1/workflow/count');
-  check(bobCount, {
-    'count: bob sees none of alice\'s runs': (r) => r.status === 200 && (safeJson(r.body) || {}).count === 0,
-  });
+  noLeak('distinct workflows', bob.get(cfg.apiServer, '/api/v1/workflow-runs/distinct-workflows'));
   const bobRuns = pageContent(safeJson(bob.get(cfg.apiServer, '/api/v1/workflow-runs?size=100').body));
   check(bobRuns, { 'runs: bob\'s page is empty': (c) => c.length === 0 });
 
   // --- Alice's workflow was not affected by bob's cancel/terminate attempts.
-  const after = alice.get(cfg.apiServer, `/api/v1/workflow/${wf}/status`);
+  const after = alice.get(cfg.apiServer, `/api/v1/workflow-runs/${wf}`);
   check(after, {
     'alice workflow not cancelled by bob': (r) => {
       const s = safeJson(r.body);
-      return r.status === 200 && s && !/CANCEL|TERMINAT/.test(String(s.temporalStatus));
+      return r.status === 200 && s && s.status === 'FINISHED';
     },
   });
 

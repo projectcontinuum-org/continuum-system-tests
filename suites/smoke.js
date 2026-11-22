@@ -5,7 +5,7 @@ import { check, fail } from 'k6';
 import { cfg } from '../lib/config.js';
 import { tenant, tenantIds } from '../lib/tenant.js';
 import { FIXTURE_NODES, missingNodes } from '../lib/capabilities.js';
-import { getStatus, startWorkflow, waitForTerminal } from '../lib/workflows.js';
+import { startWorkflow, waitForTerminal } from '../lib/workflows.js';
 import { newRunId, safeJson } from '../lib/util.js';
 
 export const options = {
@@ -44,11 +44,9 @@ export default function (data) {
     fail('workflow did not start, see the failed check above');
   }
   const final = waitForTerminal(t, workflowId, startedAt);
-  check(final, { 'workflow finished COMPLETED': (s) => s === 'COMPLETED' }, { tenant: id });
+  check(final, { 'workflow FINISHED': (s) => s === 'FINISHED' }, { tenant: id });
 
-  // 4. Run history and status are readable by the owner.
-  const status = getStatus(t, workflowId);
-  check(status, { 'owner can read /status': (s) => s.code === 200 });
+  // 4. The run record is readable by the owner.
   const run = t.get(cfg.apiServer, `/api/v1/workflow-runs/${encodeURIComponent(workflowId)}`, { endpoint: 'run_get' });
   check(run, { 'owner can read the run record': (r) => r.status === 200 });
 
