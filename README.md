@@ -49,16 +49,7 @@ removes the volumes. If it was run with `CLUSTER_MANAGER_K8S=true`, the suite al
 
 ### Known gaps
 
-Behaviour that is wrong today is reported, not failed. The suite asserts the status code it *should* return; while the platform still answers something else, it logs a `KNOWN GAP` warning and counts it in the `known_gaps` metric (tagged `gap:<name>`). When the platform is fixed the warning disappears, and the call can become a normal check. Current gaps:
-
-| Where | Today | Want |
-|---|---|---|
-| a malformed RSQL `filter` on `/workflow-runs` | 500 | 400 |
-| `/api/v1/data` for a port or node with no stored file | 500 | 404 |
-| credential create with a missing field or a non-JSON body | 500 | 400 |
-| workbench create with a non-JSON body or no `instanceName` | 500 | 400 |
-| workbench create or update with a `resources` object that omits a field (every `ResourceSpec` field is required, although the update code merges field by field and so looks designed for partial updates) | 500 | 400, or accepted and merged with the current values |
-| reading a suspended workbench (tier 2) | status becomes `UNKNOWN`, so it can no longer be resumed | stays `SUSPENDED` |
+Behaviour that is wrong today is reported, not failed. The suite asserts the status code it *should* return; while the platform still answers something else, it logs a `KNOWN GAP` warning and counts it in the `known_gaps` metric (tagged `gap:<name>`). When the platform is fixed the warning disappears, and the call can become a normal check. There are no open gaps: the platform 0.0.23 fixes turned every earlier one into a normal check (a malformed RSQL `filter` is 400, `/api/v1/data` for an unstored port or node is 404, a credential or workbench create with a missing field or a non-JSON body is 400, a partial workbench `resources` object is accepted and validated, and reading a suspended workbench keeps it `SUSPENDED`). When a new `knownGap()` call goes in, list it here as a table (`| Where | Today | Want |`); remove the row when that call becomes a `check()`.
 
 ## Requirements
 
