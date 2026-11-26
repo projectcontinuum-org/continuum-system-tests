@@ -2,7 +2,7 @@
 
 System, multi-tenant and load tests for [Project Continuum](https://github.com/projectcontinuum-org), written for [Grafana k6](https://k6.io). The tests are black-box: they call the platform's REST APIs on a running stack and never import platform code.
 
-> **Status:** early. `smoke`, `tenancy/isolation` and six API suites exist, and all pass against the docker-compose stack. The workbench, gateway and knime-scheduler suites, the load profiles and the per-feature tests are planned (see [Roadmap](#roadmap)).
+> **Status:** early. `smoke`, `tenancy/isolation`, seven API suites run by `make api` and the optional cluster-manager suite exist. The loops suite needs a platform with loops (0.0.23 from the loops branch); the others pass against the docker-compose stack. The workbench, gateway and knime-scheduler suites, the load profiles and the per-feature tests are planned (see [Roadmap](#roadmap)).
 
 ## What is tested
 
@@ -16,6 +16,7 @@ System, multi-tenant and load tests for [Project Continuum](https://github.com/p
 | `suites/api/node-explorer.js` | palette tree, search, documentation, task-queue lookup | any check fails |
 | `suites/api/data.js` | node output paging, the CONTNM-161 paging and id validation, ownership | any check fails |
 | `suites/api/credentials.js` | credential types and credentials CRUD, validation, per-tenant namespaces | any check fails |
+| `suites/api/loops.js` | the built-in Loop: registry entry (task queue `$builtin`, `Flow Control`, schema, docs), loop settings, structure and CEL condition on validate / start / schedule, the MCP workflow tools with `parent`, and live loop runs (stop after 1, 2 or 3 iterations, limits, `check: before`, missing variable, non-boolean results, member failure in iteration 1 or 2, nested loops, carried variables and the node after the loop, empty and nothing-to-run loops, the condition time budget (a macro repeating a call, and one function call of about a second), another tenant's slow conditions delaying but never failing a cheap loop, progress, failed runs recorded `FAILED`) | any check fails. Needs a platform with loops (0.0.23 built from the loops branch) |
 | `suites/api/cluster-manager.js` | workbench API: input validation (CONTNM-161), 404s, authorize, tenant scoping; with a cluster, the full create / suspend / resume / update / delete lifecycle | any check fails. Skips when the service is not reachable. |
 
 The isolation suite covers `/cancel`, `/terminate`, `/workflow-runs` (list, by id, distinct workflows), `/api/v1/data/...`, credentials and schedules.
@@ -49,7 +50,7 @@ removes the volumes. If it was run with `CLUSTER_MANAGER_K8S=true`, the suite al
 
 ### Known gaps
 
-Behaviour that is wrong today is reported, not failed. The suite asserts the status code it *should* return; while the platform still answers something else, it logs a `KNOWN GAP` warning and counts it in the `known_gaps` metric (tagged `gap:<name>`). When the platform is fixed the warning disappears, and the call can become a normal check. There are no open gaps: the platform 0.0.23 fixes turned every earlier one into a normal check (a malformed RSQL `filter` is 400, `/api/v1/data` for an unstored port or node is 404, a credential or workbench create with a missing field or a non-JSON body is 400, a partial workbench `resources` object is accepted and validated, and reading a suspended workbench keeps it `SUSPENDED`). When a new `knownGap()` call goes in, list it here as a table (`| Where | Today | Want |`); remove the row when that call becomes a `check()`.
+Behaviour that is wrong today is reported, not failed. The suite asserts the status code it *should* return; while the platform still answers something else, it logs a `KNOWN GAP` warning and counts it in the `known_gaps` metric (tagged `gap:<name>`). When the platform is fixed the warning disappears, and the call can become a normal check. There are no open gaps: the platform 0.0.23 fixes turned every earlier one into a normal check (a malformed RSQL `filter` is 400, `/api/v1/data` for an unstored port or node is 404, a credential or workbench create with a missing field or a non-JSON body is 400, a partial workbench `resources` object is accepted and validated, reading a suspended workbench keeps it `SUSPENDED`, and a run with a failed node or loop is recorded `FAILED`, not `FINISHED`). When a new `knownGap()` call goes in, list it here as a table (`| Where | Today | Want |`); remove the row when that call becomes a `check()`.
 
 ## Requirements
 
@@ -64,7 +65,7 @@ make pull       # optional: download the images first, or re-download after a fa
 make up         # start the stack (infra, platform services, the feature-base worker)
 make smoke      # about a minute
 make tenancy    # tenant isolation
-make api        # all six API suites
+make api        # all seven API suites (the loops suite needs a platform with loops)
 make down       # stop the stack and delete its volumes
 ```
 
@@ -97,6 +98,7 @@ Everything is configured by environment variables, so the same suites run agains
 | `AUTH_MODE` | `header` | `header` sends only `x-continuum-user-id`; `bearer` also sends a token per tenant |
 | `TENANT_TOKENS` | `{}` | JSON map `{"<tenant id>": "<token>"}`, used when `AUTH_MODE=bearer` |
 | `WORKFLOW_TIMEOUT_SEC` | `120` | how long to wait for a workflow to reach a final status |
+| `LOOP_REGISTRATION_TIMEOUT_SEC` | `150` | how long `suites/api/loops.js` waits for the orchestration service to register the built-in Loop |
 | `RUN_ID` | generated | makes tenant ids and workflow names unique per run |
 
 ```bash
@@ -128,17 +130,30 @@ lib/           helpers shared by the suites
   capabilities.js  check which node classes are registered
   metrics.js     custom k6 metrics
   util.js        pure helpers with no k6 imports (unit-tested)
+  loopmodel.js   pure helpers for loop workflows, run records and MCP answers (unit-tested)
+  loopscenarios.js  pure builders of the multi-iteration loop workflows, steered by default flow variables (unit-tested)
 suites/        k6 scripts
 fixtures/      workflow models posted to the api-server
-test/          node unit tests for lib/util.js
+test/          node unit tests for the pure helpers in lib/
 ```
 
-The workflow fixture is `AnomalyDetector.cwf` from the template repo (`CreateTable`, `AnomalyDetectorZScore`, `ConditionalSplitter`). It needs only the feature-base worker and no network access.
+The workflow fixture is `AnomalyDetector.cwf` from the template repo (`CreateTable`, `AnomalyDetectorZScore`, `ConditionalSplitter`). It needs only the feature-base worker and no network access. `suites/api/loops.js` builds its loop workflows in code from the same three node types.
+
+### Loop suite: what it can and cannot run
+
+No feature-base node sets a flow variable of your choosing, so the live loop runs steer the condition with the default variables every worker exports for each node run (`<nodeType>_<nodeId>.executionStatus`, `.startTimestamp`, `.endTimestamp`, `.durationMs`, `.inputCount`, `.outputCount`; for example `conditionalSplitterNode_split.executionStatus` is `"SUCCESS"` after every iteration).
+
+- Constant values cover: a condition that turns false after one iteration, both limit policies, `check: before`, a missing variable (and `||` absorbing it), `"s" == 1` false and `"s" > 1` an evaluation error, int against a double literal, non-boolean results under both `onNonBooleanResult` values, a failing member and nested loops.
+- Values that change between iterations come from timestamps (`lib/loopscenarios.js`). Inside one iteration a node starts after the node it reads from ended, so "x started at or after the entry member `score` ended" means x ran in this iteration; a member's variables stay carried until it runs again. A nested `check: before` loop "until x has run" runs x exactly once. Chaining such gates gives a loop that runs exactly 3 iterations, a `check: before` loop that runs 2, a member that fails only in iteration 2, a non-boolean result only in iteration 2, the carried value overriding an outside value of the same name (two node ids that sanitize to the same prefix, `src-x` and `src_x`), and a later member winning a name clash. An observer loop after the 3-iteration loop checks that the node after the loop inherits the last iteration's carried variables.
+- The condition time budget is driven by conditions that read no variable. One repeats a call in a macro; the other spends about a second in one `sets.intersects` call over two lists of 10,000-element lists built with `cel.bind` doublings (`oneLongCallCondition`). The real-world shape, `sets.equivalent(vars["a"], vars["b"])` over two large list variables, needs a node that sets list variables, which feature-base does not have.
+- The orchestrator evaluates conditions on 4 threads shared by every run and tenant, and an abandoned one-call evaluation keeps its thread until the call returns. The suite's second tenant starts 4 loops with `THREAD_HOLDING_CONDITION` (one call of about 9 s), which fail with the 200 ms budget text. A cheap loop of the first tenant started right after them must still end `WARNING` at its limit and its run `FINISHED`: its check finds no free thread, nothing is recorded, and Temporal retries the workflow task, so it finishes about 10 to 20 s later. A loop's `$error` never names busy threads. Expect this section to add about 20 s to the suite.
+- Terminate (`terminateChecks`, the last section, about 1 minute): a healthy loop run of 200 cheap iterations is terminated while it iterates and its record must show `RUNNING` then `TERMINATED` only, with the loop still `BUSY` (the run's own handler wrote it). Then one run with more parallel loops with very slow conditions than there are evaluation threads (5 x `ONE_LONG_CALL_CONDITION`, `check: before`) starves itself (a documented platform limit: it keeps retrying its workflow task and handles no signal, so it would stay `RUNNING` and hold every tenant's evaluation threads). It is terminated by the suite: another tenant gets 404, the owner 204, and the record must reach `TERMINATED` about 5 s later (the api-server writes it after Temporal's hard stop), leave the `status==RUNNING` list and stay `TERMINATED`. The run is stopped in a `finally`, whatever fails. Not in the suite: cancel of a stuck run (the record may stay `RUNNING`, or become `CANCELLED` after a retry attempt, so no stable assertion exists) and a terminate that races a run's own end (it can not be timed reliably over HTTP).
+- Exact per-member run counts (for example 6 inner runs for nested 2 x 3 loops) are not visible over HTTP: the run record keeps only the last iteration. They show in the Temporal history (`temporal workflow show`).
 
 ## Tests for the test code
 
 ```bash
-make test     # unit tests for lib/util.js; needs only node
+make test     # unit tests for the pure helpers in lib/; needs only node
 make check    # syntax check of every k6 script
 ```
 

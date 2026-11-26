@@ -34,7 +34,7 @@ tenancy:
 	./run.sh tenancy
 
 # Every suite under suites/api/, one after another. Stops at the first failing suite.
-API_SUITES = workflow runs schedules node-explorer data credentials
+API_SUITES = workflow runs schedules node-explorer data credentials loops
 api:
 	@set -e; for s in $(API_SUITES); do echo "=== api/$$s"; ./run.sh suites/api/$$s.js --quiet; done
 
