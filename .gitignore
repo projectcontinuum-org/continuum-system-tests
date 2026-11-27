@@ -4,5 +4,7 @@ node_modules/
 summary.json
 # Written by the load suites (lib/report.js) so two runs can be compared.
 summary-load-*.json
+# Browser-test screenshots are local evidence and should not be committed.
+/screenshots/
 # Local environment files hold secrets or local overrides.
 .env.local

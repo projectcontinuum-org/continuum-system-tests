@@ -129,6 +129,7 @@ lib/           helpers shared by the suites
   metrics.js     custom k6 metrics
   util.js        pure helpers with no k6 imports (unit-tested)
 suites/        k6 scripts
+suites/ui/     Puppeteer browser scenarios (loops.mjs: canvas membership, live Loop resizing, visible resize controls, and exact real-mouse drop-position checks for all directions and over another node; edits are explicitly saved before `.cwf` readback. loops-dialog.mjs: condition dialog, builder shapes, real mouse click-then-drag, dark/light theme, and run viewer including member last-iteration status; ONLY=visual|dialog|shapes|run|design|dragout|mouse|r5theme|collapse|payload|dbl; proxy.mjs: streaming reverse proxy on :3013 incl. /mqtt WebSocket, use with PASSTHROUGH=1 WORKBENCH_URL=http://127.0.0.1:3013 so the viewer gets live MQTT updates); run: WORKBENCH_URL=http://127.0.0.1:3002 SHOT_DIR=./screenshots node suites/ui/loops.mjs
 fixtures/      workflow models posted to the api-server
 test/          node unit tests for lib/util.js
 ```
