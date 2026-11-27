@@ -8,3 +8,4 @@ summary-load-*.json
 /screenshots/
 # Local environment files hold secrets or local overrides.
 .env.local
+docker/example-workflows/**
