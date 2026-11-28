@@ -1,4 +1,4 @@
-.PHONY: up pull down logs ps smoke tenancy api cluster-manager up-cluster-manager down-cluster-manager load noisy test check
+.PHONY: up pull down logs ps smoke tenancy api cluster-manager up-cluster-manager down-cluster-manager kotlin-lsp kotlin-lsp-image load noisy test check
 
 # Use the `docker compose` plugin when present, otherwise the standalone `docker-compose` binary (for example a
 # Homebrew install where the plugin directory is not registered in ~/.docker/config.json).
@@ -55,6 +55,20 @@ down-cluster-manager:
 # lifecycle tier, which creates real pods and needs the cluster-manager to reach a cluster.
 cluster-manager:
 	./run.sh suites/api/cluster-manager.js
+
+# The workbench's Kotlin language-server bridge, checked over the wire (plain Node 20+: no k6, no platform stack). Point it at a
+# running workbench backend; see the suite header for the optional BACKEND_PID, IDLE_TIMEOUT_SECONDS, EXPECT_LS_HOME and
+# LEAK_PROBE_DIR. Add ONLY=<group> to run some groups.
+#   WORKBENCH_URL=http://127.0.0.1:3002 IDLE_TIMEOUT_SECONDS=15 make kotlin-lsp
+kotlin-lsp:
+	node suites/api/kotlin-lsp-bridge.mjs
+
+# The same checks inside the production workbench image with no network, plus what the image contains and how it seeds the Kotlin
+# extension settings. Needs Docker and an image that already exists locally. It creates and removes only containers and volumes
+# named kotlin-lsp-systest-*.
+#   IMAGE=projectcontinuum/continuum-workbench:<tag> BASELINE_IMAGE=<previous tag> make kotlin-lsp-image
+kotlin-lsp-image:
+	node suites/api/kotlin-lsp-image.mjs
 
 # Load tests REFUSE to run without ALLOW_LOAD=true, and against any host not in LOAD_ALLOWED_HOSTS (default: localhost
 # and 127.0.0.1). A run creates workflows, object-store files and database rows that cannot be deleted through the API.

@@ -17,6 +17,8 @@ System, multi-tenant and load tests for [Project Continuum](https://github.com/p
 | `suites/api/data.js` | node output paging, the CONTNM-161 paging and id validation, ownership | any check fails |
 | `suites/api/credentials.js` | credential types and credentials CRUD, validation, per-tenant namespaces | any check fails |
 | `suites/api/cluster-manager.js` | workbench API: input validation (CONTNM-161), 404s, authorize, tenant scoping; with a cluster, the full create / suspend / resume / update / delete lifecycle | any check fails. Skips when the service is not reachable. |
+| `suites/api/kotlin-lsp-bridge.mjs` | the workbench's Kotlin language-server bridge, over the wire (plain Node, no k6): Theia's token and origin checks, one shared server for any number of editors with idle stop and a fresh start, a script opened around the moment a cold server becomes ready still gets its diagnostics and its first edit is applied (also a mistake typed into a clean script as the first edit), diagnostics at the user's own line and column, completion/hover/signature help, `initialize` promising only what is served, document ownership, only virtual `continuum-script:` documents, no workspace leak, memory under the restart ceiling, and (opt-in) what the bridge does when the server's heap is full | any check fails. Needs a running workbench backend; checks that need its processes SKIP (NOT VERIFIED) unless the suite runs where it can see them. |
+| `suites/api/kotlin-lsp-image.mjs` | the production workbench image (plain Node + Docker): the bundled Java 21 runtime (reduced, but with the JDK modules the server's libraries may touch), the pinned server, its start launcher and the Kotlin standard library, the installer's checksum guard, the launcher speaking LSP over stdio with no network, the Kotlin extension settings seeded into the folder the app reads (also from a commented settings file, one saved with a UTF-8 byte-order mark, or an unreadable one; the seed script's source copy is also run on the host), and the bridge suite run inside the container with no network | any check fails. Needs Docker and an image that exists locally. |
 
 The isolation suite covers `/cancel`, `/terminate`, `/workflow-runs` (list, by id, distinct workflows), `/api/v1/data/...`, credentials and schedules.
 
@@ -47,6 +49,43 @@ removes the volumes. If it was run with `CLUSTER_MANAGER_K8S=true`, the suite al
 | `CLUSTER_MANAGER_OVERLAYS` | `false` | the cluster-manager runs with `OVERLAY_ENABLED=true`, so an unknown variant name is rejected |
 | `CLUSTER_READY_TIMEOUT_SEC` | `300` | how long to wait for a pod to become ready |
 
+### Kotlin language-server suites (plain Node, no k6)
+
+The workbench serves code intelligence for the Kotlin Script node (a Kotlin language server behind a Theia WebSocket channel). Two suites check it from outside; neither needs the platform stack, and both exit 1 on a failed check. A check that could not run prints `SKIP ... NOT VERIFIED: <reason>` and is not a pass.
+
+```bash
+# 1. The bridge, against a running workbench backend (default http://127.0.0.1:3002)
+WORKBENCH_URL=http://127.0.0.1:3002 IDLE_TIMEOUT_SECONDS=15 make kotlin-lsp
+# 2. The production image, with no network: what is in it, the seeded settings, and suite 1 run inside the container
+#    (BASELINE_IMAGE must be a release from before the feature: a local tag can have been overwritten by a local build, so pull the
+#    release by digest and tag it under your own name, see BASELINE_IMAGE below)
+IMAGE=projectcontinuum/continuum-workbench:<tag> BASELINE_IMAGE=projectcontinuum/continuum-workbench:<previous tag> make kotlin-lsp-image
+```
+
+- **How the bridge suite talks.** It is a hand-written client for what the browser does: `GET /` for the `theia-connection-token` cookie, a WebSocket to `/socket.io` (Engine.IO v4, Socket.IO namespace `/services`), Theia's channel multiplexer and one channel `/services/language-server/kotlin-script`, one JSON-RPC message per string. The framing code is in `lib/` and unit-tested; the suite header explains it.
+- **Process checks.** Whether the server starts lazily, runs once for many editors, stops after the idle timeout, comes from the bundled folder and stays under its memory limits is read from `/proc`, so it needs the suite to run on the backend's host or inside its container (or `BACKEND_PID`). From anywhere else those checks SKIP. The image suite runs the bridge suite inside the container for exactly this reason.
+- **Idle timeout.** The bridge suite waits for the idle stop, so start the backend with `CONTINUUM_LANGUAGE_SERVER_IDLE_TIMEOUT_SECONDS=15` and pass the same number as `IDLE_TIMEOUT_SECONDS` (the image default is 600 s; without the variable the idle checks SKIP).
+- **Test data.** Documents are named `systest-<runId>-<n>` and live only in the server's memory. The leak probe writes one Kotlin file into each `LEAK_PROBE_DIR` folder and deletes it again. The image suite creates only containers and volumes named `kotlin-lsp-systest-<runId>-<role>`, removes them in a `finally`, and refuses to remove anything else; it never runs `docker system prune`.
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `WORKBENCH_URL` | `http://127.0.0.1:3002` | the workbench backend (bridge suite) |
+| `BACKEND_PID` | the listener of the URL's port | whose child processes are the language servers |
+| `IDLE_TIMEOUT_SECONDS` | unset | the backend's idle timeout, so the idle-stop checks can run (`IDLE_CHECKS=vanished` skips the second wait) |
+| `EXPECT_LS_HOME` | unset | folder the server and its Java runtime must run from (image: `/opt/continuum/kotlin-ls`) |
+| `LEAK_PROBE_DIR` | unset | comma-separated folders the backend might wrongly offer as a workspace |
+| `LS_MEMORY_LIMIT_MB`, `LS_XMX_MB` | `1000`, `512` | the restart ceiling and the heap flag the suite expects |
+| `ONLY` | all | comma-separated groups; the bridge suite also has the opt-in group `exhaustion` (overloads the server on purpose) |
+| `EXHAUSTION_DOCUMENTS`, `EXHAUSTION_WATCH_SECONDS` | `24`, `420` | `exhaustion` group: most scripts opened before giving up; how long it keeps asking like an editor after the first failed answer, waiting for the bridge to replace the server |
+| `COLDWINDOW_OFFSETS_MS` | `0,150,400,490,510,700,1500` | `coldwindow` group: the moments (ms after a cold server became ready) at which a script is opened |
+| `IMAGE` | required | the workbench image to test (image suite) |
+| `BASELINE_IMAGE` | unset | a release from before the feature: its start configuration and entrypoint script are compared (an image that already contains the Kotlin support, e.g. a local rebuild under the released tag, makes both comparisons SKIP) |
+| `WORKBENCH_SOURCE_DIR` | `../continuum-workbench` | source of the installer script and the pinned server version |
+| `NAME_PREFIX`, `BRIDGE_TIMEOUT_MINUTES` | `kotlin-lsp-systest`, `30` | prefix of every container and volume made; longest bridge run inside a container |
+| `POD_LIMIT_GIB` | `1` | memory limits (GiB, comma-separated) of the `pod-limit` group, e.g. `1,2` for the cluster manager's request and limit |
+
+The image suite's groups run in order `image`, `download`, `launcher` (the start launcher speaks LSP over stdio, started the way an editor extension starts it, with no network: the standard library is found through it alone), `seedscript` (the source copy of the seed script, run on the host against temporary folders: byte-order mark, comments, unreadable file), `seed` (the same in the image, also through the entrypoint) and `asis` (the bridge suite inside the container). Opt-in groups, chosen with `ONLY=`: `experiment` (the `asis` run once more with the Kotlin standard library placed in a second Maven-layout folder, to tell failures caused by a missing library from the rest), `default-idle` (the 10-minute production idle timeout, about 11 minutes), `exhaustion` (scripts open until the server's heap is full, then what the bridge does; several minutes) and `pod-limit` (the bridge suite in a container limited to each `POD_LIMIT_GIB` memory size: one and five editors, then exhaustion).
+
 ### Known gaps
 
 Behaviour that is wrong today is reported, not failed. The suite asserts the status code it *should* return; while the platform still answers something else, it logs a `KNOWN GAP` warning and counts it in the `known_gaps` metric (tagged `gap:<name>`). When the platform is fixed the warning disappears, and the call can become a normal check. There are no open gaps: the platform 0.0.23 fixes turned every earlier one into a normal check (a malformed RSQL `filter` is 400, `/api/v1/data` for an unstored port or node is 404, a credential or workbench create with a missing field or a non-JSON body is 400, a partial workbench `resources` object is accepted and validated, and reading a suspended workbench keeps it `SUSPENDED`). When a new `knownGap()` call goes in, list it here as a table (`| Where | Today | Want |`); remove the row when that call becomes a `check()`.
@@ -55,7 +94,7 @@ Behaviour that is wrong today is reported, not failed. The suite asserts the sta
 
 - [k6](https://grafana.com/docs/k6/latest/set-up/install-k6/) (macOS: `brew install k6`)
 - Docker with Compose, and roughly 6-8 GB of free RAM for the stack
-- Node 20+ (only for the unit tests of the helper code)
+- Node 20+ (for the unit tests of the helper code, and for the two Kotlin language-server suites, which are plain Node and need no k6)
 
 ## Quick start
 
@@ -128,10 +167,16 @@ lib/           helpers shared by the suites
   capabilities.js  check which node classes are registered
   metrics.js     custom k6 metrics
   util.js        pure helpers with no k6 imports (unit-tested)
+  theia-client.mjs  theia-wire.mjs  ws-frames.mjs  lsp-session.mjs  the plain-Node client of the Kotlin bridge suite: Socket.IO + Theia channel multiplexer over a WebSocket, and a JSON-RPC session on one channel (the framing and session logic are unit-tested)
+  kotlin-script.mjs  proc-info.mjs  image-probe.mjs  runner.mjs  pure helpers of the Kotlin suites: the context document and hidden-header line mapping (the reported names come from the real node API source in the sibling `continuum-feature-base` or `FEATURE_BASE_DIR`), /proc readers, docker/image output parsers, the check recorder (unit-tested)
+  lsp-capabilities.mjs  lsp-stdio.mjs  what an `initialize` answer promises (and a probe request for each promise), and a JSON-RPC client over stdio (Content-Length framing) for talking to a language server process directly (unit-tested)
 suites/        k6 scripts
+suites/api/kotlin-lsp-bridge.mjs  Kotlin language-server bridge checks over the wire (plain Node; see "Kotlin language-server suites")
+suites/api/kotlin-lsp-image.mjs   production-image checks, and the bridge suite run inside the container with no network (plain Node + Docker)
 suites/ui/     Puppeteer browser scenarios (loops.mjs: canvas membership, live Loop resizing, visible resize controls, and exact real-mouse drop-position checks for all directions and over another node; edits are explicitly saved before `.cwf` readback. loops-dialog.mjs: condition dialog, builder shapes, real mouse click-then-drag, dark/light theme, and run viewer including member last-iteration status; ONLY=visual|dialog|shapes|run|design|dragout|mouse|r5theme|collapse|payload|dbl; proxy.mjs: streaming reverse proxy on :3013 incl. /mqtt WebSocket, use with PASSTHROUGH=1 WORKBENCH_URL=http://127.0.0.1:3013 so the viewer gets live MQTT updates); run: WORKBENCH_URL=http://127.0.0.1:3002 SHOT_DIR=./screenshots node suites/ui/loops.mjs
+suites/ui/kotlin-lsp.mjs  Puppeteer scenarios for Kotlin language-server support in the workbench: the Kotlin Script node dialog (`first-open` cold start with no edit, completion with a really visible popup, diagnostics at the exact line/column, hover, signature help, `unclosed` and `header` script shapes, server loss / restart / `unavailable` fallback, `kill-early`, `channel` (channel open held back in the test browser), two dialogs, `twocontexts`, `no-context`/`bad-context` plain editors, Save, Rest/CreateTable/Claude editors untouched), `.kt`/`.kts` files in the file editor, and a `journey` that counts Kotlin server processes at every step and compares dialog highlighting before/after a `.kt` was opened; opt-in `hung` (frozen server, minutes). Needs only a development (non-minified) workbench, no platform stack; run: WORKBENCH_URL=http://127.0.0.1:3002 BACKEND_PID=<workbench backend pid> SHOT_DIR=/abs/dir node suites/ui/kotlin-lsp.mjs (ONLY=<name>[,<name>]; scenarios that count Kotlin servers end an idle Kotlin JVM under BACKEND_PID, `fallback`/`kill-early`/`hung` kill or freeze it: use your own workbench)
 fixtures/      workflow models posted to the api-server
-test/          node unit tests for lib/util.js
+test/          node unit tests for the pure helpers in lib/
 ```
 
 The workflow fixture is `AnomalyDetector.cwf` from the template repo (`CreateTable`, `AnomalyDetectorZScore`, `ConditionalSplitter`). It needs only the feature-base worker and no network access.
@@ -139,8 +184,8 @@ The workflow fixture is `AnomalyDetector.cwf` from the template repo (`CreateTab
 ## Tests for the test code
 
 ```bash
-make test     # unit tests for lib/util.js; needs only node
-make check    # syntax check of every k6 script
+make test     # unit tests for the pure helpers in lib/ (util, load, the Kotlin suites' client and parsers); needs only node
+make check    # syntax check of every script, k6 and plain Node
 ```
 
 These do not need k6 or Docker. They do not run the suites.
